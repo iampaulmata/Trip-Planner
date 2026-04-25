@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp, Cloud, CloudRain, Layers3, Sun } from 'lucide-r
 import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
+import { computeDistanceBetween, computeHeading, computeLength, interpolateBetween } from './geoUtils'
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
 const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
@@ -71,16 +72,16 @@ function formatDistanceText(distanceMeters) {
   return `${miles.toFixed(decimals)} mi`
 }
 
-function buildAnimatedPath(google, path) {
+function buildAnimatedPath(path) {
   if (!path?.length || path.length < 4) return path
 
-  const totalLength = google.maps.geometry.spherical.computeLength(path)
+  const totalLength = computeLength(path)
   const spacingMeters = Math.min(Math.max(totalLength / 18, 900), 4200)
   const reduced = [path[0]]
   let carriedDistance = 0
 
   for (let index = 1; index < path.length - 1; index += 1) {
-    carriedDistance += google.maps.geometry.spherical.computeDistanceBetween(path[index - 1], path[index])
+    carriedDistance += computeDistanceBetween(path[index - 1], path[index])
     if (carriedDistance >= spacingMeters) {
       reduced.push(path[index])
       carriedDistance = 0
@@ -530,14 +531,14 @@ function getVehicleColor(route) {
   return TONE_COLORS[route?.tone] || TONE_COLORS.info
 }
 
-function buildPathDistanceProfile(google, path) {
-  if (!google || !path?.length || path.length < 2) return null
+function buildPathDistanceProfile(path) {
+  if (!path?.length || path.length < 2) return null
 
   const cumulative = [0]
   let totalDistance = 0
 
   for (let index = 1; index < path.length; index += 1) {
-    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(path[index - 1], path[index])
+    totalDistance += computeDistanceBetween(path[index - 1], path[index])
     cumulative.push(totalDistance)
   }
 
@@ -550,14 +551,14 @@ function buildPathDistanceProfile(google, path) {
   }
 }
 
-function getNearestPathProgress(google, pathProfile, coordinate) {
-  if (!google || !pathProfile || !coordinate) return null
+function getNearestPathProgress(pathProfile, coordinate) {
+  if (!pathProfile || !coordinate) return null
 
   let nearestIndex = 0
   let nearestDistance = Number.POSITIVE_INFINITY
 
   pathProfile.path.forEach((point, index) => {
-    const distance = google.maps.geometry.spherical.computeDistanceBetween(point, coordinate)
+    const distance = computeDistanceBetween(point, coordinate)
     if (distance < nearestDistance) {
       nearestDistance = distance
       nearestIndex = index
@@ -567,7 +568,7 @@ function getNearestPathProgress(google, pathProfile, coordinate) {
   return clamp01(pathProfile.cumulative[nearestIndex] / pathProfile.totalDistance)
 }
 
-function buildRoutePlaybackProfile(google, route, pathProfile, locationsById, routeWindowSlots) {
+function buildRoutePlaybackProfile(route, pathProfile, locationsById, routeWindowSlots) {
   if (!pathProfile) return null
   const { path } = pathProfile
 
@@ -582,7 +583,7 @@ function buildRoutePlaybackProfile(google, route, pathProfile, locationsById, ro
   const rawAnchorProgresses = [origin, ...intermediateStops, destination].map((coordinate, index, anchors) => {
     if (index === 0) return 0
     if (index === anchors.length - 1) return 1
-    return getNearestPathProgress(google, pathProfile, coordinate)
+    return getNearestPathProgress(pathProfile, coordinate)
   })
 
   const anchorProgresses = rawAnchorProgresses.map((progress, index, anchors) => {
@@ -659,9 +660,8 @@ function getRoutePlaybackState(playbackProfile, rawProgress) {
   }
 }
 
-function getRoutePlaybackProgress(google, routeEntry, pathProfile, locationsById, rawProgress, routeWindowSlots) {
+function getRoutePlaybackProgress(routeEntry, pathProfile, locationsById, rawProgress, routeWindowSlots) {
   const profile = buildRoutePlaybackProfile(
-    google,
     routeEntry?.route,
     pathProfile,
     locationsById,
@@ -670,7 +670,7 @@ function getRoutePlaybackProgress(google, routeEntry, pathProfile, locationsById
   return getRoutePlaybackState(profile, rawProgress)
 }
 
-function interpolateAlongPath(google, pathProfile, progress) {
+function interpolateAlongPath(pathProfile, progress) {
   const path = pathProfile?.path
   if (!path?.length) return null
   if (path.length === 1 || !pathProfile.totalDistance) return path[0]
@@ -686,8 +686,7 @@ function interpolateAlongPath(google, pathProfile, progress) {
     const segmentStartDistance = pathProfile.cumulative[index - 1]
     const segmentDistance = segmentEndDistance - segmentStartDistance
     const segmentRatio = segmentDistance ? (targetDistance - segmentStartDistance) / segmentDistance : 0
-    const point = google.maps.geometry.spherical.interpolate(start, end, clamp01(segmentRatio))
-    return { lat: point.lat(), lng: point.lng() }
+    return interpolateBetween(start, end, clamp01(segmentRatio))
   }
 
   return path[path.length - 1]
@@ -709,9 +708,9 @@ function appendDistinctPoint(points, point) {
   points.push(normalizedPoint)
 }
 
-function extractPathSegment(google, pathProfile, startProgress = 0, endProgress = 1) {
+function extractPathSegment(pathProfile, startProgress = 0, endProgress = 1) {
   const path = pathProfile?.path
-  if (!google || !path?.length) return []
+  if (!path?.length) return []
   if (path.length === 1 || !pathProfile.totalDistance) {
     return path.map((point) => ({ lat: point.lat, lng: point.lng }))
   }
@@ -722,7 +721,7 @@ function extractPathSegment(google, pathProfile, startProgress = 0, endProgress 
   const endDistance = end * pathProfile.totalDistance
   const segment = []
 
-  appendDistinctPoint(segment, interpolateAlongPath(google, pathProfile, start))
+  appendDistinctPoint(segment, interpolateAlongPath(pathProfile, start))
 
   for (let index = 1; index < path.length - 1; index += 1) {
     const waypointDistance = pathProfile.cumulative[index]
@@ -731,11 +730,11 @@ function extractPathSegment(google, pathProfile, startProgress = 0, endProgress 
     }
   }
 
-  appendDistinctPoint(segment, interpolateAlongPath(google, pathProfile, end))
+  appendDistinctPoint(segment, interpolateAlongPath(pathProfile, end))
   return segment
 }
 
-function buildRouteCameraViewportPoints(google, pathProfile, progress, mode) {
+function buildRouteCameraViewportPoints(pathProfile, progress, mode) {
   if (!pathProfile?.path?.length) return []
   if (mode === 'arrival') return []
   if (mode === 'premove') {
@@ -748,11 +747,11 @@ function buildRouteCameraViewportPoints(google, pathProfile, progress, mode) {
     pathProfile.totalDistance ? Math.min(0.06, 2200 / pathProfile.totalDistance) : 0.04
   const viewportStart = Math.max(0, lerp(0, clampedProgress, tightenAlpha) - trailingContext)
 
-  return extractPathSegment(google, pathProfile, viewportStart, 1)
+  return extractPathSegment(pathProfile, viewportStart, 1)
 }
 
-function findNearestPlaybackStop(google, position, route, locationsById) {
-  if (!google || !position || !route) return null
+function findNearestPlaybackStop(position, route, locationsById) {
+  if (!position || !route) return null
 
   const PLAYBACK_STOP_FOCUS_RADIUS_METERS = 1800
   const candidates = [...(route.stopLocationIds || []), route.destinationLocationId]
@@ -765,7 +764,7 @@ function findNearestPlaybackStop(google, position, route, locationsById) {
   let nearest = null
 
   candidates.forEach((location) => {
-    const distanceMeters = google.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
+    const distanceMeters = computeDistanceBetween(position, location.coordinates)
     if (!nearest || distanceMeters < nearest.distanceMeters) {
       nearest = { location, distanceMeters }
     }
@@ -964,7 +963,6 @@ function weightedCenter(points) {
 }
 
 function buildParticipantCameraTarget({
-  google,
   map,
   vehicleEntries,
   highlightedLocation,
@@ -1011,9 +1009,8 @@ function buildParticipantCameraTarget({
       : trackedEntries.flatMap((entry) => {
           const pathProfile =
             entry.routePathProfile ||
-            buildPathDistanceProfile(google, entry.routeEntry?.currentPath || entry.routeEntry?.route?.path || [])
+            buildPathDistanceProfile(entry.routeEntry?.currentPath || entry.routeEntry?.route?.path || [])
           return buildRouteCameraViewportPoints(
-            google,
             pathProfile,
             entry.routePlaybackProgress ?? 0,
             entry.isInTransit ? 'active' : entry.isPreMove ? 'premove' : 'arrival',
@@ -1482,7 +1479,7 @@ export default function CommandMap({
             currentPath: seededPath,
             animationPath: seededPath,
             routeSource: 'seeded',
-            lengthMeters: Math.max(google.maps.geometry.spherical.computeLength(seededPath || []), 1),
+            lengthMeters: Math.max(computeLength(seededPath || []), 1),
             offset: 0,
             nominalSpeedMetersPerSecond:
               (route.tone === 'warning'
@@ -1507,9 +1504,9 @@ export default function CommandMap({
             } = await resolveDrivingPath(google, entry.route)
             if (cancelled) return
             entry.currentPath = drivingPath
-            entry.animationPath = buildAnimatedPath(google, drivingPath)
+            entry.animationPath = buildAnimatedPath(drivingPath)
             entry.routeSource = source
-            entry.lengthMeters = Math.max(google.maps.geometry.spherical.computeLength(drivingPath), 1)
+            entry.lengthMeters = Math.max(computeLength(drivingPath), 1)
             entry.basePolyline.setPath(drivingPath)
             entry.animatedPolyline.setPath(entry.animationPath)
             if (source === 'directions') {
@@ -1822,7 +1819,6 @@ export default function CommandMap({
         if (!markerPosition) return false
         const route = entry.routeEntry?.route
         const nearestStop = findNearestPlaybackStop(
-          googleRef.current,
           markerPosition,
           route,
           locationsById,
@@ -2001,13 +1997,12 @@ export default function CommandMap({
         if (!visible) return false
 
         const path = getRoutePath(routeEntry)
-        const pathProfile = buildPathDistanceProfile(googleRef.current, path)
+        const pathProfile = buildPathDistanceProfile(path)
         const origin = getRouteOrigin(family, route, path)
         const destination = path?.[path.length - 1] || origin
         const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
         const rawProgress = endSlot === startSlot ? 1 : (cursorSlot - startSlot) / (endSlot - startSlot)
         const { progress: mappedProgress } = getRoutePlaybackProgress(
-          googleRef.current,
           routeEntry,
           pathProfile,
           locationsById,
@@ -2019,10 +2014,10 @@ export default function CommandMap({
         if (cursorSlot >= endSlot) {
           position = destination
         } else if (cursorSlot > startSlot) {
-          position = interpolateAlongPath(googleRef.current, pathProfile, mappedProgress) || origin
+          position = interpolateAlongPath(pathProfile, mappedProgress) || origin
         }
 
-        const nearestStop = findNearestPlaybackStop(googleRef.current, position, route, locationsById)
+        const nearestStop = findNearestPlaybackStop(position, route, locationsById)
         if (!nearestStop) return false
 
         playbackAutoLocationId = nearestStop.id
@@ -2161,13 +2156,12 @@ export default function CommandMap({
       }
 
       const path = getRoutePath(routeEntry)
-      const pathProfile = buildPathDistanceProfile(googleRef.current, path)
+      const pathProfile = buildPathDistanceProfile(path)
       const origin = getRouteOrigin(family, route, path)
       const destination = path?.[path.length - 1] || origin
       const { startSlot, endSlot } = getRouteSimulationWindow(route, itineraryItems)
       const rawProgress = endSlot === startSlot ? 1 : (cursorSlot - startSlot) / (endSlot - startSlot)
       const { progress: mappedProgress } = getRoutePlaybackProgress(
-        googleRef.current,
         routeEntry,
         pathProfile,
         locationsById,
@@ -2179,7 +2173,7 @@ export default function CommandMap({
       if (cursorSlot >= endSlot) {
         position = destination
       } else if (cursorSlot > startSlot) {
-        position = interpolateAlongPath(googleRef.current, pathProfile, mappedProgress) || origin
+        position = interpolateAlongPath(pathProfile, mappedProgress) || origin
       }
 
       const lookaheadMeters = pathProfile ? Math.min(Math.max(pathProfile.totalDistance * 0.018, 180), 1400) : 420
@@ -2189,10 +2183,10 @@ export default function CommandMap({
       const nextPosition =
         cursorSlot >= endSlot
           ? destination
-          : interpolateAlongPath(googleRef.current, pathProfile, nextProgress) || destination
+          : interpolateAlongPath(pathProfile, nextProgress) || destination
       const heading =
         position && nextPosition
-          ? googleRef.current.maps.geometry.spherical.computeHeading(position, nextPosition) || 0
+          ? computeHeading(position, nextPosition) || 0
           : 0
       const emphasized = selectedRoute || selectedFamily
       const fillColor = getVehicleColor(route)
@@ -2308,7 +2302,7 @@ export default function CommandMap({
         .filter((location) => location?.coordinates)
 
       for (const location of stopLocations) {
-        const distanceMeters = googleRef.current.maps.geometry.spherical.computeDistanceBetween(position, location.coordinates)
+        const distanceMeters = computeDistanceBetween(position, location.coordinates)
         const isArrival = location.id === route.destinationLocationId
         const threshold = isArrival ? 2200 : 1800
         if (distanceMeters <= threshold) {
@@ -2423,7 +2417,6 @@ export default function CommandMap({
       (!playbackActive ? locations.find((location) => location.id === selectedLocationId) : null)
 
     const participantCameraTarget = buildParticipantCameraTarget({
-      google: googleRef.current,
       map,
       vehicleEntries: vehicleEntriesRef.current,
       highlightedLocation,
@@ -2480,7 +2473,7 @@ export default function CommandMap({
       if (lastViewportTargetRef.current === viewportKey) return
       const currentCenter = map.getCenter()
       const distanceFromCenter = currentCenter
-        ? googleRef.current.maps.geometry.spherical.computeDistanceBetween(currentCenter, selectedLocation.coordinates)
+        ? computeDistanceBetween(currentCenter, selectedLocation.coordinates)
         : Infinity
       map.panTo(selectedLocation.coordinates)
       if (distanceFromCenter > 6000 && (map.getZoom() || 0) < 12) {
