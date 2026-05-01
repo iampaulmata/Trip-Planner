@@ -37,7 +37,7 @@ The repo is intentionally overbuilt for a small real-life use case. That is the 
 
 - React 19
 - Vite
-- Google Maps JavaScript API
+- MapLibre GL (replaces Google Maps — no API key required)
 - Lucide icons
 - Framer Motion
 
@@ -45,27 +45,10 @@ The repo is intentionally overbuilt for a small real-life use case. That is the 
 
 ```bash
 npm install
-cp .env.example .env
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173` or whatever Vite prints.
-
-## Environment
-
-For the full map experience, add a browser Maps key to `.env`:
-
-```bash
-VITE_GOOGLE_MAPS_API_KEY=your_browser_maps_key_here
-```
-
-Optional:
-
-```bash
-VITE_GOOGLE_MAP_ID=your_optional_google_map_id
-```
-
-Without a key, the app still renders its UI but the live Google map layer will not fully initialize.
+Open `http://127.0.0.1:5173` or whatever Vite prints. No API key needed.
 
 ## Data / Privacy
 
@@ -74,8 +57,6 @@ The trip data in this repo is intentionally sanitized for public sharing.
 - Family names are demo names.
 - The basecamp address is generalized.
 - Access instructions, Wi-Fi, host details, and other private trip notes are removed.
-
-If you publish this with your own Google Maps key, usage is billed to your Google Cloud project.
 
 ## Repo Notes
 
@@ -89,6 +70,7 @@ Good places to start:
 
 - `src/App.jsx` for the main shell, timeline, and overlays
 - `src/CommandMap.jsx` for route rendering, playback, and map behavior
+- `src/geoUtils.js` for pure-math geometry helpers (distance, heading, interpolation)
 - `src/tripModel.js` for the seeded trip document and helper logic
 
 ## Status

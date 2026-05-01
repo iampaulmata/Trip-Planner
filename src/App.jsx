@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
 import {
   ArrowRight,
   CarFront,
@@ -69,10 +68,6 @@ import {
 } from './tripModel'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
-const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
-const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
 
 function cn(...inputs) {
   return twMerge(clsx(inputs))
@@ -4270,204 +4265,107 @@ function App() {
 
   useEffect(() => {
     if (!liveExternalData) return
-    if (!GOOGLE_MAPS_API_KEY) return
 
     const basecampLocation = doc.locations.find((location) => location.id === 'pine-airbnb')
     const pendingPlaceLocations = doc.locations.filter((location) => {
       if (!location.placesQuery) return false
 
       const needsPlaceMatch = location.placesQuery && !location.placeId
-      const needsPlaceDetails = location.placeId && !location.websiteUrl && !location.phoneNumber && !location.rating
       const needsDriveProfile =
         location.category === 'meal' &&
         location.id !== 'pine-airbnb' &&
         basecampLocation?.coordinates &&
         !location.basecampDrive
 
-      return (needsPlaceMatch || needsPlaceDetails || needsDriveProfile) && !locationIntelHydrationRef.current.has(location.id)
+      return (needsPlaceMatch || needsDriveProfile) && !locationIntelHydrationRef.current.has(location.id)
     })
 
     if (!pendingPlaceLocations.length) return
 
     let cancelled = false
 
-    async function hydrateMealIntel() {
+    const findPlaceMatch = async (location) => {
+      if (!location.placesQuery || location.placeId) return null
       try {
-        if (!window.__tripCommandCenterMapsConfigured) {
-          setOptions({
-            key: GOOGLE_MAPS_API_KEY,
-            version: 'weekly',
-            mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
-          })
-          window.__tripCommandCenterMapsConfigured = true
-        }
-
-        await importLibrary('maps')
-        await importLibrary('places')
-        const google = window.google
-        if (cancelled || !google) return
-
-        const placesContainer = document.createElement('div')
-        const placesService = SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV
-          ? null
-          : new google.maps.places.PlacesService(placesContainer)
-        const directionsService = SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV
-          ? null
-          : new google.maps.DirectionsService()
-
-        const findPlaceMatch = (location) =>
-          new Promise((resolve, reject) => {
-            if (!location.placesQuery || location.placeId) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            placesService.findPlaceFromQuery(
-              {
-                query: location.placesQuery,
-                fields: ['name', 'formatted_address', 'geometry', 'place_id'],
-              },
-              (results, status) => {
-                if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
-                  reject(new Error(`Place match failed for ${location.id}: ${status}`))
-                  return
-                }
-                resolve(results[0])
-              },
-            )
-          })
-
-        const fetchPlaceDetails = (placeId) =>
-          new Promise((resolve, reject) => {
-            if (!placeId) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            placesService.getDetails(
-              {
-                placeId,
-                fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
-              },
-              (result, status) => {
-                if (status !== google.maps.places.PlacesServiceStatus.OK || !result) {
-                  reject(new Error(`Place details failed for ${placeId}: ${status}`))
-                  return
-                }
-                resolve(result)
-              },
-            )
-          })
-
-        const fetchDriveProfile = (origin, destination) =>
-          new Promise((resolve, reject) => {
-            if (!origin || !destination) {
-              resolve(null)
-              return
-            }
-
-            if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) {
-              resolve(null)
-              return
-            }
-
-            directionsService.route(
-              {
-                origin,
-                destination,
-                travelMode: google.maps.TravelMode.DRIVING,
-                provideRouteAlternatives: false,
-              },
-              (result, status) => {
-                if (status !== 'OK' || !result?.routes?.length) {
-                  reject(new Error(`Drive profile failed: ${status}`))
-                  return
-                }
-
-                const leg = result.routes[0]?.legs?.[0]
-                resolve(
-                  leg
-                    ? {
-                        distanceText: leg.distance?.text || '',
-                        distanceMeters: leg.distance?.value || 0,
-                        durationText: leg.duration?.text || '',
-                        durationSeconds: leg.duration?.value || 0,
-                      }
-                    : null,
-                )
-              },
-            )
-          })
-
-        for (const location of pendingPlaceLocations) {
-          locationIntelHydrationRef.current.add(location.id)
-
-          try {
-            const matchedPlace = await findPlaceMatch(location)
-            if (cancelled) return
-
-            const coordinates = matchedPlace?.geometry?.location
-              ? {
-                  lat: matchedPlace.geometry.location.lat(),
-                  lng: matchedPlace.geometry.location.lng(),
-                }
-              : location.coordinates
-            const placeId = matchedPlace?.place_id || location.placeId
-            const placeDetails = placeId ? await fetchPlaceDetails(placeId) : null
-            if (cancelled) return
-
-            const livePhotos = (placeDetails?.photos || []).slice(0, 3).map((photo, index) => ({
-              id: `${location.id}-live-photo-${index + 1}`,
-              label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
-              imageUrl: photo.getUrl({ maxWidth: 900 }),
-              sourceUrl: placeId ? `https://www.google.com/maps/place/?q=place_id:${placeId}` : location.externalUrl,
-            }))
-
-            let basecampDrive = location.basecampDrive
-            if (location.category === 'meal' && basecampLocation?.coordinates && !basecampDrive) {
-              try {
-                basecampDrive = await fetchDriveProfile(basecampLocation.coordinates, coordinates)
-              } catch {
-                basecampDrive = location.basecampDrive
-              }
-            }
-
-            hydrateLocationDetails(location.id, {
-              title: matchedPlace?.name || location.title,
-              address: matchedPlace?.formatted_address || location.address,
-              coordinates,
-              placeId,
-              externalUrl: placeId ? `https://www.google.com/maps/place/?q=place_id:${placeId}` : location.externalUrl,
-              phoneNumber: placeDetails?.formatted_phone_number || location.phoneNumber,
-              websiteUrl: placeDetails?.website || location.websiteUrl,
-              rating: placeDetails?.rating || location.rating,
-              userRatingsTotal: placeDetails?.user_ratings_total || location.userRatingsTotal,
-              openingHours: placeDetails?.opening_hours?.weekday_text || location.openingHours,
-              livePhotos: livePhotos.length ? livePhotos : location.livePhotos,
-              basecampDrive,
-            })
-          } catch {
-            // Keep fallback meal intel if Google data is unavailable.
-          } finally {
-            locationIntelHydrationRef.current.delete(location.id)
-          }
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location.placesQuery)}&format=json&limit=1`
+        const res = await fetch(url, { headers: { 'Accept-Language': 'en' } })
+        const data = await res.json()
+        if (!data?.length) return null
+        const item = data[0]
+        return {
+          name: item.display_name?.split(',')[0] || location.title,
+          formatted_address: item.display_name || '',
+          geometry: { location: { lat: parseFloat(item.lat), lng: parseFloat(item.lon) } },
+          place_id: item.osm_id ? `osm:${item.osm_type}${item.osm_id}` : null,
         }
       } catch {
-        // Keep seeded meal data if Google libraries fail to load.
+        return null
       }
     }
 
-    hydrateMealIntel()
+    const fetchDriveProfile = async (origin, destination) => {
+      if (!origin || !destination) return null
+      try {
+        const coords = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`
+        const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=false`
+        const res = await fetch(url)
+        const data = await res.json()
+        if (data.code !== 'Ok' || !data.routes?.length) return null
+        const route = data.routes[0]
+        const distanceMeters = route.distance || 0
+        const durationSeconds = route.duration || 0
+        const miles = distanceMeters / 1609.344
+        const distanceText = `${miles >= 10 ? miles.toFixed(0) : miles.toFixed(1)} mi`
+        const totalMinutes = Math.round(durationSeconds / 60)
+        const hours = Math.floor(totalMinutes / 60)
+        const minutes = totalMinutes % 60
+        const durationText = hours ? (minutes ? `${hours} hr ${minutes} min` : `${hours} hr`) : `${totalMinutes} min`
+        return { distanceText, distanceMeters, durationText, durationSeconds }
+      } catch {
+        return null
+      }
+    }
+
+    async function hydratePlaceIntel() {
+      for (const location of pendingPlaceLocations) {
+        if (cancelled) return
+        locationIntelHydrationRef.current.add(location.id)
+
+        try {
+          const matchedPlace = await findPlaceMatch(location)
+          if (cancelled) return
+
+          const coordinates = matchedPlace?.geometry?.location
+            ? { lat: matchedPlace.geometry.location.lat, lng: matchedPlace.geometry.location.lng }
+            : location.coordinates
+
+          let basecampDrive = location.basecampDrive
+          if (location.category === 'meal' && basecampLocation?.coordinates && !basecampDrive) {
+            try {
+              basecampDrive = await fetchDriveProfile(basecampLocation.coordinates, coordinates)
+            } catch {
+              basecampDrive = location.basecampDrive
+            }
+          }
+          if (cancelled) return
+
+          hydrateLocationDetails(location.id, {
+            title: matchedPlace?.name || location.title,
+            address: matchedPlace?.formatted_address || location.address,
+            coordinates,
+            placeId: matchedPlace?.place_id || location.placeId,
+            externalUrl: location.externalUrl,
+            basecampDrive,
+          })
+        } catch {
+          // Keep seeded fallback if open-source data is unavailable.
+        } finally {
+          locationIntelHydrationRef.current.delete(location.id)
+        }
+      }
+    }
+
+    hydratePlaceIntel()
 
     return () => {
       cancelled = true

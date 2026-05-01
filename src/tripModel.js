@@ -2117,6 +2117,7 @@ export function createInitialTripDocument() {
         showTraffic: false,
         focusFamilyId: 'all',
         focusDayId: 'all',
+        tileProvider: 'openfreemap',
       },
     },
     families: buildFamilies(),

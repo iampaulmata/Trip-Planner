@@ -1,30 +1,135 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
+import maplibregl from 'maplibre-gl'
+import { Protocol } from 'pmtiles'
 import { ChevronDown, ChevronUp, Cloud, CloudRain, Layers3, Sun } from 'lucide-react'
 import { isLiveExternalDataEnabled } from './publishConfig'
 import { DAYS, TIME_SLOTS } from './tripData'
 import { getRouteDurationSlotSpan, parseEntityKey } from './tripModel'
 import { computeDistanceBetween, computeHeading, computeLength, interpolateBetween } from './geoUtils'
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
+// Register PMTiles protocol once at module scope
+const pmtilesProtocol = new Protocol()
+maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile)
 
-const DARK_MAP_STYLES = [
-  { elementType: 'geometry', stylers: [{ color: '#0b0f14' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#0b0f14' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#8b949e' }] },
-  { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: '#30363d' }] },
-  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#11161d' }] },
-  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#0f1712' }] },
-  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#3fb950' }] },
-  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1f2a34' }] },
-  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#161b22' }] },
-  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#24313d' }] },
-  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#58a6ff' }] },
-  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#1b2028' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#08111d' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#58a6ff' }] },
-]
+function resolveMapStyle(tileProvider, offlinePmtilesPath) {
+  if (tileProvider === 'offline' && offlinePmtilesPath) {
+    return {
+      version: 8,
+      glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+      sprite: 'https://tiles.openfreemap.org/sprites/liberty/sprite',
+      sources: {
+        'ofm-tiles': { type: 'vector', url: `pmtiles://${offlinePmtilesPath}` },
+      },
+      layers: buildDarkStyleLayers(),
+    }
+  }
+  if (tileProvider === 'osm') {
+    return {
+      version: 8,
+      sources: {
+        'osm-raster': {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        },
+      },
+      layers: [{ id: 'osm-raster', type: 'raster', source: 'osm-raster' }],
+    }
+  }
+  return 'https://tiles.openfreemap.org/styles/liberty'
+}
+
+function buildDarkStyleLayers() {
+  return [
+    { id: 'background', type: 'background', paint: { 'background-color': '#0b0f14' } },
+    { id: 'water', type: 'fill', source: 'ofm-tiles', 'source-layer': 'water', paint: { 'fill-color': '#08111d' } },
+    { id: 'landuse-poi', type: 'fill', source: 'ofm-tiles', 'source-layer': 'landuse', paint: { 'fill-color': '#11161d' } },
+    { id: 'park', type: 'fill', source: 'ofm-tiles', 'source-layer': 'park', paint: { 'fill-color': '#0f1712' } },
+    { id: 'road-line', type: 'line', source: 'ofm-tiles', 'source-layer': 'transportation', filter: ['!=', ['get', 'class'], 'motorway'], paint: { 'line-color': '#1f2a34', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 16, 3] } },
+    { id: 'highway-line', type: 'line', source: 'ofm-tiles', 'source-layer': 'transportation', filter: ['==', ['get', 'class'], 'motorway'], paint: { 'line-color': '#24313d', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1, 16, 5] } },
+    { id: 'highway-border', type: 'line', source: 'ofm-tiles', 'source-layer': 'transportation', filter: ['==', ['get', 'class'], 'motorway'], paint: { 'line-color': '#58a6ff', 'line-width': 0.5, 'line-offset': 1.5 } },
+    { id: 'admin-boundary', type: 'line', source: 'ofm-tiles', 'source-layer': 'boundary', paint: { 'line-color': '#30363d', 'line-width': 0.8, 'line-dasharray': [4, 2] } },
+    { id: 'water-label', type: 'symbol', source: 'ofm-tiles', 'source-layer': 'water_name', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Italic', 'Noto Sans Regular'], 'text-size': 10 }, paint: { 'text-color': '#58a6ff', 'text-halo-color': '#0b0f14', 'text-halo-width': 1 } },
+    { id: 'place-label', type: 'symbol', source: 'ofm-tiles', 'source-layer': 'place', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Bold', 'Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 4, 9, 10, 12] }, paint: { 'text-color': '#8b949e', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.5 } },
+  ]
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+
+function buildRouteGeoJSON(path) {
+  const coords = (path || []).map((p) => [p.lng, p.lat])
+  return {
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: coords.length >= 2 ? coords : [[0, 0], [0, 0]] },
+    properties: {},
+  }
+}
+
+function buildRouteGradient(offset01, color, emphasized) {
+  const bright = emphasized ? 0.88 : 0.58
+  const w = 0.09
+  const s1 = Math.max(0, offset01 - w)
+  const s2 = offset01
+  const s3 = Math.min(1, offset01 + w * 0.4)
+  const transparent = hexToRgba(color, 0)
+  const bright_ = hexToRgba(color, bright)
+  const stops = [0, transparent]
+  if (s1 > 0.001) stops.push(s1, transparent)
+  stops.push(s2, bright_)
+  if (s3 < 0.999) stops.push(s3, transparent)
+  stops.push(1, transparent)
+  return ['interpolate', ['linear'], ['line-progress'], ...stops]
+}
+
+function buildLocationEl(color, emphasized, label) {
+  const scale = emphasized ? 1.5 : 1.2
+  const size = Math.round(24 * scale)
+  const fillOpacity = emphasized ? 0.32 : 0.18
+  const strokeWidth = emphasized ? 3 : 2
+  const el = document.createElement('div')
+  el.style.cssText = 'pointer-events:auto;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px'
+  el.innerHTML = `<svg width="${size}" height="${size}" viewBox="-12 -12 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M -6 0 L 0 -6 L 6 0 L 0 6 Z" fill="${color}" fill-opacity="${fillOpacity}" stroke="${color}" stroke-width="${strokeWidth}"/>
+  </svg>${label ? `<div style="color:#C9D1D9;font-size:8px;font-weight:700;text-shadow:0 0 4px #0b0f14;white-space:nowrap;max-width:88px;overflow:hidden;text-overflow:ellipsis">${label}</div>` : ''}`
+  return el
+}
+
+function buildPulseEl() {
+  const el = document.createElement('div')
+  el.style.cssText = 'pointer-events:none;border-radius:50%;border:2px solid transparent;position:absolute;transform:translate(-50%,-50%)'
+  return el
+}
+
+function buildArrowSvg(color, emphasized) {
+  const scale = emphasized ? 6.3 : 5.6
+  const strokeColor = emphasized ? '#E6EDF3' : '#0D1117'
+  const strokeWidth = emphasized ? 2.4 : 2
+  const s = scale * 3
+  return `<svg width="${s}" height="${s}" viewBox="${-scale * 1.5} ${-scale * 1.5} ${scale * 3} ${scale * 3}" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="0,${-scale} ${scale * 0.8},${scale * 0.6} 0,${scale * 0.25} ${-scale * 0.8},${scale * 0.6}"
+      fill="${color}" fill-opacity="${emphasized ? 1 : 0.9}"
+      stroke="${strokeColor}" stroke-width="${strokeWidth}" stroke-linejoin="round"/>
+  </svg>`
+}
+
+function buildArrowEl(color, emphasized) {
+  const el = document.createElement('div')
+  el.style.cssText = 'pointer-events:auto;cursor:pointer'
+  el.innerHTML = buildArrowSvg(color, emphasized)
+  return el
+}
+
+function buildRadarEl() {
+  const el = document.createElement('div')
+  el.style.cssText = 'pointer-events:none;border-radius:50%;border:1.8px solid transparent;position:absolute;transform:translate(-50%,-50%)'
+  return el
+}
 
 const TONE_COLORS = {
   info: '#58A6FF',
@@ -39,8 +144,6 @@ const SPEED_REDUCTION_FACTOR = 0.75
 const MIN_ROUTE_LOOP_SECONDS = 16
 const MAX_ROUTE_LOOP_SECONDS = 34
 const LIVE_EXTERNAL_DATA = isLiveExternalDataEnabled()
-const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
-const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
 const WEATHER_ICONS = {
   sun: Sun,
   partly: Cloud,
@@ -349,21 +452,26 @@ function ensureLocationBriefingStyles() {
   const style = document.createElement('style')
   style.id = 'trip-location-briefing-styles'
   style.textContent = `
-    .gm-style .gm-style-iw-c {
+    .maplibregl-popup-content {
       padding: 0 !important;
       border-radius: 0 !important;
       background: transparent !important;
       box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42) !important;
     }
-    .gm-style .gm-style-iw-d {
-      overflow: hidden !important;
-      max-height: none !important;
+    .maplibregl-popup-tip {
+      display: none !important;
     }
-    .gm-style .gm-ui-hover-effect {
+    .maplibregl-popup-close-button {
       top: 8px !important;
       right: 8px !important;
-      opacity: 0.84;
-      filter: invert(1) brightness(1.4);
+      color: #8B949E !important;
+      font-size: 18px !important;
+      line-height: 1 !important;
+      background: none !important;
+    }
+    .maplibregl-popup-close-button:hover {
+      color: #C9D1D9 !important;
+      background: none !important;
     }
     .trip-briefing {
       width: 320px;
@@ -970,7 +1078,7 @@ function buildParticipantCameraTarget({
 }) {
   const currentDayId = getCursorDayId(cursorSlot)
   const visibleEntries = vehicleEntries
-    .filter((entry) => entry.marker.getMap())
+    .filter((entry) => entry.visible)
     .filter((entry) => {
       const routeDayId = entry.routeEntry?.route?.dayId
       return !routeDayId || routeDayId === 'all' || routeDayId === currentDayId
@@ -1154,8 +1262,6 @@ export default function CommandMap({
 }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
-  const googleRef = useRef(null)
-  const trafficLayerRef = useRef(null)
   const routeEntriesRef = useRef([])
   const markerEntriesRef = useRef([])
   const vehicleEntriesRef = useRef([])
@@ -1167,12 +1273,10 @@ export default function CommandMap({
   const cameraStateRef = useRef(null)
   const prevCursorSlotRef = useRef(null)
   const playbackCueKeysRef = useRef(new Map())
-  const directionsServiceRef = useRef(null)
-  const directionsAvailabilityRef = useRef('unknown')
-  const placesServiceRef = useRef(null)
-  const placesAvailabilityRef = useRef('unknown')
+  const pmtilesInputRef = useRef(null)
+  const [offlinePmtilesPath, setOfflinePmtilesPath] = useState(null)
   const [status, setStatus] = useState('loading')
-  const [statusDetail, setStatusDetail] = useState('Connecting to Google Maps...')
+  const [statusDetail, setStatusDetail] = useState('Connecting to OpenFreeMap...')
   const [mapLayerCollapsed, setMapLayerCollapsed] = useState(false)
   const [weatherCollapsed, setWeatherCollapsed] = useState(false)
   const effectiveFocusDayId =
@@ -1196,426 +1300,292 @@ export default function CommandMap({
     onPlaybackFeedItems?.(freshCues)
   }, [onPlaybackFeedItems])
 
-  const resolveDrivingPath = async (google, route) => {
+  const handlePmtilesFile = useCallback((event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (offlinePmtilesPath) URL.revokeObjectURL(offlinePmtilesPath)
+    const blobUrl = URL.createObjectURL(file)
+    setOfflinePmtilesPath(blobUrl)
+    onUpdateMapUi({ tileProvider: 'offline' })
+  }, [offlinePmtilesPath, onUpdateMapUi])
+
+  const handleOfflineTileToggle = useCallback(() => {
+    if (mapUi.tileProvider === 'offline') {
+      onUpdateMapUi({ tileProvider: 'openfreemap' })
+    } else if (offlinePmtilesPath) {
+      onUpdateMapUi({ tileProvider: 'offline' })
+    } else {
+      pmtilesInputRef.current?.click()
+    }
+  }, [mapUi.tileProvider, offlinePmtilesPath, onUpdateMapUi])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || status !== 'ready') return
+    const newStyle = resolveMapStyle(mapUi.tileProvider || 'openfreemap', offlinePmtilesPath)
+    map.setStyle(newStyle)
+    map.once('style.load', () => {
+      routeEntriesRef.current.forEach((entry) => {
+        if (!map.getSource(entry.sourceId)) {
+          map.addSource(entry.sourceId, { type: 'geojson', data: buildRouteGeoJSON(entry.currentPath || entry.route.path), lineMetrics: true })
+          const color = TONE_COLORS[entry.route.tone] || TONE_COLORS.info
+          map.addLayer({ id: entry.baseLayerId, type: 'line', source: entry.sourceId, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': color, 'line-opacity': 0.26, 'line-width': 2.1 } })
+          map.addLayer({ id: entry.dashLayerId, type: 'line', source: entry.sourceId, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-gradient': buildRouteGradient(entry.offset ?? 0, color, false), 'line-width': 4.5 } })
+        }
+      })
+    })
+  }, [mapUi.tileProvider, offlinePmtilesPath, status])
+
+  const resolveDrivingPath = async (route) => {
     const locationsById = new Map(locations.map((location) => [location.id, location]))
     const fallbackPath = buildRouteCoordinatePath(route, locationsById)
-    if (!fallbackPath || fallbackPath.length < 2) {
-      return { path: fallbackPath, source: 'seeded' }
-    }
+    if (!fallbackPath || fallbackPath.length < 2) return { path: fallbackPath, source: 'seeded' }
     if (!LIVE_EXTERNAL_DATA) return { path: fallbackPath, source: 'seeded' }
-    if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) return { path: fallbackPath, source: 'seeded' }
-    if (directionsAvailabilityRef.current === 'unavailable') return { path: fallbackPath, source: 'seeded' }
-
-    if (!directionsServiceRef.current) {
-      directionsServiceRef.current = new google.maps.DirectionsService()
-    }
 
     const origin = route?.originCoordinates || fallbackPath[0]
-    const destination = route?.destinationLocationId
+    const dest = route?.destinationLocationId
       ? locationsById.get(route.destinationLocationId)?.coordinates || fallbackPath[fallbackPath.length - 1]
       : fallbackPath[fallbackPath.length - 1]
     const waypointPoints = (route?.stopLocationIds || [])
       .map((locationId) => locationsById.get(locationId)?.coordinates || null)
       .filter(Boolean)
 
-    return new Promise((resolve, reject) => {
-      directionsServiceRef.current.route(
-        {
-          origin,
-          destination,
-          waypoints: waypointPoints.map((point) => ({ location: point, stopover: false })),
-          travelMode: google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: false,
-        },
-        (result, routeStatus) => {
-          if (routeStatus !== 'OK' || !result?.routes?.length) {
-            if (routeStatus === 'REQUEST_DENIED') {
-              directionsAvailabilityRef.current = 'unavailable'
-            }
-            reject(new Error(`Directions failed for ${route.id}: ${routeStatus}`))
-            return
-          }
+    const allPoints = [origin, ...waypointPoints, dest]
+    const coordStr = allPoints.map((p) => `${p.lng},${p.lat}`).join(';')
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`
 
-          const overviewPath = result.routes[0].overview_path?.map((point) => ({
-            lat: point.lat(),
-            lng: point.lng(),
-          }))
-          const legs = result.routes[0].legs || []
-          const durationSeconds = legs.reduce((sum, leg) => sum + (leg.duration?.value || 0), 0)
-          const distanceMeters = legs.reduce((sum, leg) => sum + (leg.distance?.value || 0), 0)
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) })
+    if (!response.ok) throw new Error(`OSRM HTTP ${response.status}`)
+    const data = await response.json()
+    if (data.code !== 'Ok' || !data.routes?.length) throw new Error(`OSRM: ${data.code}`)
 
-          resolve({
-            path: overviewPath?.length ? overviewPath : fallbackPath,
-            source: overviewPath?.length ? 'directions' : 'seeded',
-            durationSeconds,
-            durationText:
-              legs.length === 1
-                ? legs[0]?.duration?.text || formatDurationText(durationSeconds)
-                : formatDurationText(durationSeconds),
-            distanceMeters,
-            distanceText:
-              legs.length === 1
-                ? legs[0]?.distance?.text || formatDistanceText(distanceMeters)
-                : formatDistanceText(distanceMeters),
-          })
-        },
-      )
-    })
+    const path = data.routes[0].geometry.coordinates.map(([lng, lat]) => ({ lat, lng }))
+    const durationSeconds = data.routes[0].duration
+    const distanceMeters = data.routes[0].distance
+
+    return {
+      path,
+      source: 'directions',
+      durationSeconds,
+      durationText: formatDurationText(durationSeconds),
+      distanceMeters,
+      distanceText: formatDistanceText(distanceMeters),
+    }
   }
 
-  const resolvePlaceMatch = async (google, location) => {
+  const resolvePlaceMatch = async (location) => {
     if (!location.placesQuery || location.placeId) return null
     if (!LIVE_EXTERNAL_DATA) return null
-    if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
-    if (placesAvailabilityRef.current === 'unavailable') return null
 
-    if (!placesServiceRef.current) {
-      placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
-    }
-
-    return new Promise((resolve, reject) => {
-      placesServiceRef.current.findPlaceFromQuery(
-        {
-          query: location.placesQuery,
-          fields: ['name', 'formatted_address', 'geometry', 'place_id'],
-        },
-        (results, placeStatus) => {
-          if (placeStatus !== google.maps.places.PlacesServiceStatus.OK || !results?.length) {
-            if (placeStatus === google.maps.places.PlacesServiceStatus.REQUEST_DENIED) {
-              placesAvailabilityRef.current = 'unavailable'
-            }
-            reject(new Error(`Places failed for ${location.id}: ${placeStatus}`))
-            return
-          }
-
-          resolve(results[0])
-        },
-      )
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location.placesQuery)}&format=json&limit=1&addressdetails=1`
+    const response = await fetch(url, {
+      headers: { 'Accept-Language': 'en', 'User-Agent': 'PalantirFamilyTrips/1.0' },
+      signal: AbortSignal.timeout(6000),
     })
+    if (!response.ok) return null
+    const results = await response.json()
+    if (!results?.length) return null
+
+    return {
+      name: location.title,
+      formatted_address: results[0].display_name,
+      geometry: { location: { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) } },
+      place_id: results[0].place_id,
+    }
   }
 
-  const resolvePlaceDetails = async (google, placeId) => {
-    if (!placeId) return null
-    if (!LIVE_EXTERNAL_DATA) return null
-    if (SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV) return null
-    if (placesAvailabilityRef.current === 'unavailable') return null
-
-    if (!placesServiceRef.current) {
-      placesServiceRef.current = new google.maps.places.PlacesService(mapRef.current)
-    }
-
-    return new Promise((resolve, reject) => {
-      placesServiceRef.current.getDetails(
-        {
-          placeId,
-          fields: ['formatted_phone_number', 'website', 'rating', 'user_ratings_total', 'opening_hours', 'photos'],
-        },
-        (result, placeStatus) => {
-          if (placeStatus !== google.maps.places.PlacesServiceStatus.OK || !result) {
-            if (placeStatus === google.maps.places.PlacesServiceStatus.REQUEST_DENIED) {
-              placesAvailabilityRef.current = 'unavailable'
-            }
-            reject(new Error(`Place details failed for ${placeId}: ${placeStatus}`))
-            return
-          }
-
-          resolve(result)
-        },
-      )
-    })
+  const resolvePlaceDetails = async (_placeId) => {
+    // Nominatim does not provide phone/hours/photos — return null so existing null-guards handle it
+    return null
   }
 
-  const resolveDriveProfile = async (google, origin, destination) => {
+  const resolveDriveProfile = async (origin, destination) => {
     if (!origin || !destination) return null
     if (!LIVE_EXTERNAL_DATA) return null
-    if (SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV) return null
-    if (directionsAvailabilityRef.current === 'unavailable') return null
 
-    if (!directionsServiceRef.current) {
-      directionsServiceRef.current = new google.maps.DirectionsService()
+    const coordStr = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=false`
+
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) })
+    if (!response.ok) return null
+    const data = await response.json()
+    if (data.code !== 'Ok' || !data.routes?.length) return null
+
+    const durationSeconds = data.routes[0].duration
+    const distanceMeters = data.routes[0].distance
+
+    return {
+      distanceText: formatDistanceText(distanceMeters),
+      distanceMeters,
+      durationText: formatDurationText(durationSeconds),
+      durationSeconds,
     }
-
-    return new Promise((resolve, reject) => {
-      directionsServiceRef.current.route(
-        {
-          origin,
-          destination,
-          travelMode: google.maps.TravelMode.DRIVING,
-          provideRouteAlternatives: false,
-        },
-        (result, routeStatus) => {
-          if (routeStatus !== 'OK' || !result?.routes?.length) {
-            if (routeStatus === 'REQUEST_DENIED') {
-              directionsAvailabilityRef.current = 'unavailable'
-            }
-            reject(new Error(`Drive profile failed: ${routeStatus}`))
-            return
-          }
-
-          const leg = result.routes[0]?.legs?.[0]
-          if (!leg) {
-            resolve(null)
-            return
-          }
-
-          resolve({
-            distanceText: leg.distance?.text || '',
-            distanceMeters: leg.distance?.value || 0,
-            durationText: leg.duration?.text || '',
-            durationSeconds: leg.duration?.value || 0,
-          })
-        },
-      )
-    })
   }
 
   useEffect(() => {
     if (!containerRef.current) return
 
-    if (!GOOGLE_MAPS_API_KEY) {
-      setStatus('missing')
-      setStatusDetail('Missing VITE_GOOGLE_MAPS_API_KEY')
-      return
-    }
-
     let cancelled = false
 
     async function initializeMap() {
       try {
-        // Initialize the Google Map once. Follow-up effects below keep markers,
-        // routes, vehicles, and camera state in sync without tearing down the map.
         const initialLocations = locations
         const initialRoutes = routes
 
         ensureLocationBriefingStyles()
 
-        if (!window.__tripCommandCenterMapsConfigured) {
-          setOptions({
-            key: GOOGLE_MAPS_API_KEY,
-            version: 'weekly',
-            mapIds: GOOGLE_MAP_ID ? [GOOGLE_MAP_ID] : undefined,
-          })
-          window.__tripCommandCenterMapsConfigured = true
-        }
-
-        await importLibrary('maps')
-        await importLibrary('geometry')
-        const google = window.google
-        if (cancelled || !containerRef.current) return
-
-        googleRef.current = google
-
-        const bounds = new google.maps.LatLngBounds()
-        initialLocations.forEach((location) => bounds.extend(location.coordinates))
         const initialBasecampCenter =
           initialLocations.find((location) => location.id === 'pine-airbnb')?.coordinates || { lat: 37.8586, lng: -120.2142 }
 
-        const map = new google.maps.Map(containerRef.current, {
-          center: initialBasecampCenter,
+        const map = new maplibregl.Map({
+          container: containerRef.current,
+          style: resolveMapStyle(mapUi.tileProvider || 'openfreemap', offlinePmtilesPath),
+          center: [initialBasecampCenter.lng, initialBasecampCenter.lat],
           zoom: 7,
-          disableDefaultUI: true,
-          zoomControl: true,
-          gestureHandling: 'greedy',
-          backgroundColor: '#080a0f',
-          mapId: GOOGLE_MAP_ID || undefined,
-          styles: GOOGLE_MAP_ID ? undefined : DARK_MAP_STYLES,
+          attributionControl: true,
+          dragRotate: false,
         })
 
-        map.fitBounds(bounds, 80)
-        cameraStateRef.current = {
-          center: initialBasecampCenter,
-          zoom: 7,
+        await new Promise((resolve, reject) => {
+          map.once('load', resolve)
+          map.once('error', (e) => reject(e.error || new Error('Map load failed')))
+        })
+        if (cancelled || !containerRef.current) { map.remove(); return }
+
+        if (initialLocations.length >= 2) {
+          const lats = initialLocations.map((l) => l.coordinates.lat)
+          const lngs = initialLocations.map((l) => l.coordinates.lng)
+          map.fitBounds(
+            [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+            { padding: 80, duration: 0 },
+          )
         }
+
         mapRef.current = map
-        trafficLayerRef.current = new google.maps.TrafficLayer()
-        if (LIVE_EXTERNAL_DATA) {
-          await importLibrary('places')
-        }
+        cameraStateRef.current = { center: initialBasecampCenter, zoom: 7 }
 
         const initialLocationsById = new Map(initialLocations.map((location) => [location.id, location]))
 
         routeEntriesRef.current = initialRoutes.map((route) => {
           const seededPath = buildRouteCoordinatePath(route, initialLocationsById)
-          const basePolyline = new google.maps.Polyline({
-            map,
-            path: seededPath,
-            geodesic: true,
-            strokeColor: TONE_COLORS[route.tone],
-            strokeOpacity: route.tone === 'muted' ? 0.34 : 0.28,
-            strokeWeight: route.tone === 'muted' ? 2 : 2.5,
+          const sourceId = `route-${route.id}`
+          const baseLayerId = `route-base-${route.id}`
+          const dashLayerId = `route-dash-${route.id}`
+          const color = TONE_COLORS[route.tone] || TONE_COLORS.info
+          const baseOpacity = route.tone === 'muted' ? 0.34 : 0.28
+          const baseWidth = route.tone === 'muted' ? 2 : 2.5
+
+          map.addSource(sourceId, { type: 'geojson', data: buildRouteGeoJSON(seededPath), lineMetrics: true })
+          map.addLayer({
+            id: baseLayerId,
+            type: 'line',
+            source: sourceId,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': color, 'line-opacity': baseOpacity, 'line-width': baseWidth },
+          })
+          map.addLayer({
+            id: dashLayerId,
+            type: 'line',
+            source: sourceId,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': color, 'line-width': baseWidth + 0.6, 'line-gradient': buildRouteGradient(0, color, false) },
           })
 
-          const animatedPolyline = new google.maps.Polyline({
-            map,
-            path: seededPath,
-            geodesic: true,
-            strokeOpacity: 0,
-            icons: [
-              {
-                icon: {
-                  path: 'M 0,-1 0,1',
-                  strokeOpacity: route.tone === 'muted' ? 0.45 : 0.55,
-                  strokeColor: TONE_COLORS[route.tone],
-                  scale: route.tone === 'muted' ? 2.5 : 3,
-                },
-                offset: '0%',
-                repeat: route.dashed ? '18px' : '14px',
-              },
-            ],
-          })
-
-          const handleRouteClick = () => {
-            const linked = parseEntityKey(route.linkedEntityKey)
-            onSelectEntity(linked.type, linked.id)
+          if (route.linkedEntityKey) {
+            map.on('click', baseLayerId, () => {
+              const linked = parseEntityKey(route.linkedEntityKey)
+              onSelectEntity(linked.type, linked.id)
+            })
+            map.on('mouseenter', baseLayerId, () => { map.getCanvas().style.cursor = 'pointer' })
+            map.on('mouseleave', baseLayerId, () => { map.getCanvas().style.cursor = '' })
           }
-
-          basePolyline.addListener('click', handleRouteClick)
-          animatedPolyline.addListener('click', handleRouteClick)
 
           return {
             route,
-            basePolyline,
-            animatedPolyline,
+            sourceId,
+            baseLayerId,
+            dashLayerId,
             currentPath: seededPath,
             animationPath: seededPath,
             routeSource: 'seeded',
             lengthMeters: Math.max(computeLength(seededPath || []), 1),
             offset: 0,
             nominalSpeedMetersPerSecond:
-              (route.tone === 'warning'
-                ? 60000
-                : route.tone === 'muted'
-                  ? 35000
-                  : 50000) * SPEED_REDUCTION_FACTOR,
+              (route.tone === 'warning' ? 60000 : route.tone === 'muted' ? 35000 : 50000) * SPEED_REDUCTION_FACTOR,
             loopDurationSeconds: 24,
             shouldAnimate: true,
+            visible: true,
           }
         })
 
         for (const entry of routeEntriesRef.current) {
           try {
-            const {
-              path: drivingPath,
-              source,
-              durationSeconds,
-              durationText,
-              distanceMeters,
-              distanceText,
-            } = await resolveDrivingPath(google, entry.route)
+            const { path: drivingPath, source, durationSeconds, durationText, distanceMeters, distanceText } =
+              await resolveDrivingPath(entry.route)
             if (cancelled) return
             entry.currentPath = drivingPath
             entry.animationPath = buildAnimatedPath(drivingPath)
             entry.routeSource = source
             entry.lengthMeters = Math.max(computeLength(drivingPath), 1)
-            entry.basePolyline.setPath(drivingPath)
-            entry.animatedPolyline.setPath(entry.animationPath)
+            map.getSource(entry.sourceId)?.setData(buildRouteGeoJSON(drivingPath))
             if (source === 'directions') {
-              onHydrateRouteDetails?.(entry.route.id, {
-                path: drivingPath,
-                durationSeconds,
-                durationText,
-                distanceMeters,
-                distanceText,
-              })
+              onHydrateRouteDetails?.(entry.route.id, { path: drivingPath, durationSeconds, durationText, distanceMeters, distanceText })
             }
           } catch {
             // Keep seeded fallback path if routing is unavailable.
-            if (directionsAvailabilityRef.current === 'unavailable') break
           }
         }
 
         markerEntriesRef.current = initialLocations.map((location) => {
-          const marker = new google.maps.Marker({
-            map,
-            position: location.coordinates,
-            title: location.title,
-            label: null,
-            icon: {
-              path: 'M -6 0 L 0 -6 L 6 0 L 0 6 Z',
-              fillColor: colorForCategory(location),
-              fillOpacity: 0.18,
-              strokeColor: colorForCategory(location),
-              strokeWeight: 2,
-              scale: 1.2,
-              labelOrigin: new google.maps.Point(0, 18),
-            },
-          })
+          const color = colorForCategory(location)
+          const markerEl = buildLocationEl(color, false, null)
+          const marker = new maplibregl.Marker({ element: markerEl, anchor: 'center' })
+            .setLngLat([location.coordinates.lng, location.coordinates.lat])
+            .addTo(map)
 
-          const pulseMarker = new google.maps.Marker({
-            map: null,
-            clickable: false,
-            zIndex: 24,
-            position: location.coordinates,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              strokeColor: colorForCategory(location),
-              strokeOpacity: 0,
-              strokeWeight: 1.4,
-              fillColor: colorForCategory(location),
-              fillOpacity: 0,
-              scale: 0,
-            },
-          })
+          const pulseEl = buildPulseEl()
+          const pulseMarker = new maplibregl.Marker({ element: pulseEl, anchor: 'center' })
+            .setLngLat([location.coordinates.lng, location.coordinates.lat])
 
-          const infoWindow = new google.maps.InfoWindow({
-            content: buildLocationBriefingContent(location),
-          })
+          const popup = new maplibregl.Popup({
+            closeButton: true, closeOnClick: false, anchor: 'bottom', offset: [0, -14], maxWidth: '340px',
+          }).setHTML(buildLocationBriefingContent(location))
 
-          marker.addListener('click', () => {
-            infoWindow.open({ map, anchor: marker })
+          markerEl.addEventListener('click', () => {
+            popup.setLngLat([location.coordinates.lng, location.coordinates.lat]).addTo(map)
             onSelectEntity('location', location.id)
           })
 
-          return { location, marker, pulseMarker, infoWindow, pulseOffset: Math.random(), pulseVisible: false }
+          return { location, marker, markerEl, pulseMarker, pulseEl, popup, pulseOffset: Math.random(), pulseVisible: false, visible: true, isPlaybackHighlighted: false }
         })
 
         vehicleEntriesRef.current = families.map((family) => {
           const routeEntry = pickFamilyRouteEntry(routeEntriesRef.current, family.id, cursorSlot, effectiveFocusDayId, itineraryItems)
-          const originPosition = getRouteOrigin(family, routeEntry?.route, routeEntry?.route.path)
-          const marker = new google.maps.Marker({
-            map,
-            position: originPosition,
-            title: `${family.vehicleLabel || 'Vehicle'} · ${family.title}`,
-            zIndex: 60,
-            icon: {
-              path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-              fillColor: getVehicleColor(routeEntry?.route),
-              fillOpacity: 0.95,
-              strokeColor: '#0D1117',
-              strokeWeight: 2,
-              rotation: 0,
-              scale: 5.6,
-              anchor: new google.maps.Point(0, 2.8),
-            },
-          })
+          const originPosition = getRouteOrigin(family, routeEntry?.route, routeEntry?.route?.path)
+          const fillColor = getVehicleColor(routeEntry?.route)
 
-          const radarMarker = new google.maps.Marker({
-            map: null,
-            clickable: false,
-            zIndex: 50,
-            position: originPosition,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              strokeColor: getVehicleColor(routeEntry?.route),
-              strokeOpacity: 0,
-              strokeWeight: 1.4,
-              fillColor: getVehicleColor(routeEntry?.route),
-              fillOpacity: 0,
-              scale: 0,
-            },
-          })
+          const arrowEl = buildArrowEl(fillColor, false)
+          const marker = new maplibregl.Marker({ element: arrowEl, anchor: 'center', rotationAlignment: 'map' })
+            .setLngLat([originPosition?.lng ?? 0, originPosition?.lat ?? 0])
+            .addTo(map)
+
+          const radarEl = buildRadarEl()
+          const radarMarker = new maplibregl.Marker({ element: radarEl, anchor: 'center' })
+            .setLngLat([originPosition?.lng ?? 0, originPosition?.lat ?? 0])
 
           return {
-            family,
-            routeEntry,
-            marker,
-            radarMarker,
+            family, routeEntry,
+            marker, arrowEl,
+            radarMarker, radarEl,
             currentPosition: originPosition || null,
             targetPosition: originPosition || null,
             currentHeading: 0,
             targetHeading: 0,
             alertVisible: false,
-            alertTone: getVehicleColor(routeEntry?.route),
+            alertTone: fillColor,
+            visible: true,
+            isInTransit: false,
+            isPreMove: false,
           }
         })
 
@@ -1623,13 +1593,13 @@ export default function CommandMap({
 
         for (const entry of markerEntriesRef.current) {
           try {
-            const matchedPlace = await resolvePlaceMatch(google, entry.location)
+            const matchedPlace = await resolvePlaceMatch(entry.location)
             if (cancelled) return
             if (!matchedPlace?.geometry?.location) continue
 
             const coordinates = {
-              lat: matchedPlace.geometry.location.lat(),
-              lng: matchedPlace.geometry.location.lng(),
+              lat: matchedPlace.geometry.location.lat,
+              lng: matchedPlace.geometry.location.lng,
             }
 
             entry.location = {
@@ -1638,66 +1608,22 @@ export default function CommandMap({
               address: matchedPlace.formatted_address || entry.location.address,
               coordinates,
               placeId: matchedPlace.place_id || entry.location.placeId,
-              externalUrl: matchedPlace.place_id
-                ? `https://www.google.com/maps/place/?q=place_id:${matchedPlace.place_id}`
-                : entry.location.externalUrl,
-            }
-
-            let livePhotos = entry.location.livePhotos || []
-            let placeDetails = null
-
-            try {
-              placeDetails = await resolvePlaceDetails(google, entry.location.placeId)
-            } catch {
-              placeDetails = null
-            }
-
-            if (placeDetails) {
-              livePhotos = (placeDetails.photos || []).slice(0, 3).map((photo, index) => ({
-                id: `${entry.location.id}-live-photo-${index + 1}`,
-                label: index === 0 ? 'Live venue photo' : `Venue photo ${index + 1}`,
-                imageUrl: photo.getUrl({ maxWidth: 900 }),
-                sourceUrl: entry.location.externalUrl,
-              }))
-
-              entry.location = {
-                ...entry.location,
-                phoneNumber: placeDetails.formatted_phone_number || entry.location.phoneNumber,
-                websiteUrl: placeDetails.website || entry.location.websiteUrl,
-                rating: placeDetails.rating || entry.location.rating,
-                userRatingsTotal: placeDetails.user_ratings_total || entry.location.userRatingsTotal,
-                openingHours: placeDetails.opening_hours?.weekday_text || entry.location.openingHours,
-                livePhotos,
-              }
+              externalUrl: entry.location.externalUrl,
             }
 
             let basecampDrive = entry.location.basecampDrive
-            if (
-              entry.location.category === 'meal' &&
-              entry.location.id !== 'pine-airbnb' &&
-              basecampLocation?.coordinates
-            ) {
+            if (entry.location.category === 'meal' && entry.location.id !== 'pine-airbnb' && basecampLocation?.coordinates) {
               try {
-                basecampDrive = await resolveDriveProfile(
-                  google,
-                  basecampLocation.coordinates,
-                  entry.location.coordinates,
-                )
+                basecampDrive = await resolveDriveProfile(basecampLocation.coordinates, entry.location.coordinates)
               } catch {
                 basecampDrive = entry.location.basecampDrive
               }
             }
 
-            entry.location = {
-              ...entry.location,
-              livePhotos,
-              basecampDrive,
-            }
-
-            entry.marker.setPosition(coordinates)
-            entry.pulseMarker?.setPosition(coordinates)
-            entry.marker.setTitle(entry.location.title)
-            entry.infoWindow.setContent(buildLocationBriefingContent(entry.location))
+            entry.location = { ...entry.location, basecampDrive }
+            entry.marker.setLngLat([coordinates.lng, coordinates.lat])
+            entry.pulseMarker.setLngLat([coordinates.lng, coordinates.lat])
+            entry.popup.setHTML(buildLocationBriefingContent(entry.location))
 
             onHydrateLocationDetails?.(entry.location.id, {
               title: entry.location.title,
@@ -1714,22 +1640,20 @@ export default function CommandMap({
               basecampDrive: entry.location.basecampDrive,
             })
           } catch {
-            if (placesAvailabilityRef.current === 'unavailable') break
+            // continue on error
           }
         }
 
         setStatus('ready')
         setStatusDetail(
-          GOOGLE_MAP_ID
-            ? 'Cloud-styled Google Map online'
-            : LIVE_EXTERNAL_DATA
-              ? 'Use routes, facilities, and traffic layers to inspect the current plan'
-              : 'Seeded demo map online with bundled route intel',
+          LIVE_EXTERNAL_DATA
+            ? 'Use routes, facilities, and traffic layers to inspect the current plan'
+            : 'Seeded demo map online with bundled route intel',
         )
       } catch (error) {
         if (cancelled) return
         setStatus('error')
-        setStatusDetail(error?.message || 'Google Maps failed to load')
+        setStatusDetail(error?.message || 'Map failed to load')
       }
     }
 
@@ -1739,22 +1663,25 @@ export default function CommandMap({
       cancelled = true
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current)
       lastAnimationTimestampRef.current = null
-      if (trafficLayerRef.current) trafficLayerRef.current.setMap(null)
-      routeEntriesRef.current.forEach(({ basePolyline, animatedPolyline }) => {
-        basePolyline.setMap(null)
-        animatedPolyline.setMap(null)
-      })
-      markerEntriesRef.current.forEach(({ marker, pulseMarker, infoWindow }) => {
-        googleRef.current?.maps.event.clearInstanceListeners(marker)
-        infoWindow.close()
-        pulseMarker?.setMap(null)
-        marker.setMap(null)
-      })
-      vehicleEntriesRef.current.forEach(({ marker, radarMarker }) => {
-        googleRef.current?.maps.event.clearInstanceListeners(marker)
-        radarMarker?.setMap(null)
-        marker.setMap(null)
-      })
+      const map = mapRef.current
+      if (map) {
+        routeEntriesRef.current.forEach(({ baseLayerId, dashLayerId, sourceId }) => {
+          if (map.getLayer(baseLayerId)) map.removeLayer(baseLayerId)
+          if (map.getLayer(dashLayerId)) map.removeLayer(dashLayerId)
+          if (map.getSource(sourceId)) map.removeSource(sourceId)
+        })
+        markerEntriesRef.current.forEach(({ marker, pulseMarker, popup }) => {
+          popup?.remove()
+          pulseMarker?.remove()
+          marker?.remove()
+        })
+        vehicleEntriesRef.current.forEach(({ marker, radarMarker }) => {
+          radarMarker?.remove()
+          marker?.remove()
+        })
+        map.remove()
+        mapRef.current = null
+      }
     }
   }, [onHydrateLocationDetails, onHydrateRouteDetails, onSelectEntity])
 
@@ -1766,10 +1693,13 @@ export default function CommandMap({
       if (!latestLocation) return
 
       entry.location = latestLocation
-      entry.marker.setPosition(latestLocation.coordinates)
-      entry.pulseMarker?.setPosition(latestLocation.coordinates)
-      entry.marker.setTitle(latestLocation.title)
-      entry.infoWindow.setContent(buildLocationBriefingContent(latestLocation))
+      entry.marker.setLngLat([latestLocation.coordinates.lng, latestLocation.coordinates.lat])
+      if (entry.pulseMarker) {
+        entry.pulseMarker.setLngLat([latestLocation.coordinates.lng, latestLocation.coordinates.lat])
+      }
+      if (entry.popup) {
+        entry.popup.setHTML(buildLocationBriefingContent(latestLocation))
+      }
     })
   }, [locations, status])
 
@@ -1789,8 +1719,6 @@ export default function CommandMap({
 
       entry.family = latestFamily
       entry.routeEntry = latestRouteEntry
-      entry.marker.setTitle(`${latestFamily.vehicleLabel || 'Vehicle'} · ${latestFamily.title}`)
-      entry.marker.setLabel(null)
     })
   }, [cursorSlot, effectiveFocusDayId, families, itineraryItems, routes, status])
 
@@ -1813,9 +1741,9 @@ export default function CommandMap({
     if (playbackActive && !targetLocationId) {
       const locationsById = new Map(locations.map((location) => [location.id, location]))
       vehicleEntriesRef.current.some((entry) => {
-        if (!entry.marker.getMap()) return false
+        if (!entry.visible) return false
         if (!entry.isInTransit) return false
-        const markerPosition = entry.marker.getPosition()
+        const markerPosition = entry.currentPosition
         if (!markerPosition) return false
         const route = entry.routeEntry?.route
         const nearestStop = findNearestPlaybackStop(
@@ -1861,53 +1789,51 @@ export default function CommandMap({
       const cameraAnimationAlpha = 1 - Math.exp(-deltaSeconds * 2.7)
 
       routeEntriesRef.current.forEach((entry) => {
-        if (!entry.animatedPolyline.getMap()) return
-        const icons = entry.animatedPolyline.get('icons')
-        if (!icons?.length) return
+        if (!entry.visible) return
+        const map = mapRef.current
+        if (!map) return
         if (!entry.shouldAnimate) {
           if (entry.offset !== 0) {
             entry.offset = 0
-            icons[0].offset = '0%'
-            entry.animatedPolyline.set('icons', icons)
+            map.setPaintProperty(entry.dashLayerId, 'line-gradient', buildRouteGradient(0, TONE_COLORS[entry.route.tone] || TONE_COLORS.info, false))
           }
           return
         }
-        const distancePercent = entry.shouldAnimate
-          ? (deltaSeconds / entry.loopDurationSeconds) * 100
-          : 0
-        entry.offset = (entry.offset + distancePercent) % 100
-        icons[0].offset = `${entry.offset}%`
-        entry.animatedPolyline.set('icons', icons)
+        const distanceFraction = deltaSeconds / entry.loopDurationSeconds
+        entry.offset = (entry.offset + distanceFraction) % 1
+        const color = TONE_COLORS[entry.route.tone] || TONE_COLORS.info
+        map.setPaintProperty(entry.dashLayerId, 'line-gradient', buildRouteGradient(entry.offset, color, entry.emphasized ?? false))
       })
 
       vehicleEntriesRef.current.forEach((entry) => {
-        if (!entry.radarMarker) return
+        if (!entry.radarMarker || !entry.radarEl) return
 
         if (!entry.alertVisible || !entry.currentPosition) {
-          if (entry.radarMarker.getMap()) entry.radarMarker.setMap(null)
+          if (entry.radarMarkerVisible) {
+            entry.radarEl.style.borderColor = 'transparent'
+            entry.radarMarkerVisible = false
+          }
           return
         }
 
         const pulsePhase = (((timestamp / 1000) * 1.18) + (entry.family?.id === 'north-star' ? 0.12 : entry.family?.id === 'silver-peak' ? 0.34 : 0.56)) % 1
         const cycle = 1 - pulsePhase
-        entry.radarMarker.setMap(mapRef.current)
-        entry.radarMarker.setPosition(entry.currentPosition)
-        entry.radarMarker.setIcon({
-          path: googleRef.current.maps.SymbolPath.CIRCLE,
-          strokeColor: entry.alertTone || '#58A6FF',
-          strokeOpacity: 0.34 * cycle,
-          strokeWeight: 1.8,
-          fillColor: entry.alertTone || '#58A6FF',
-          fillOpacity: 0.06 * cycle,
-          scale: 11 + pulsePhase * 10,
-        })
+        const color = entry.alertTone || '#58A6FF'
+        const size = Math.round(2 * (11 + pulsePhase * 10))
+        entry.radarMarker.setLngLat([entry.currentPosition.lng, entry.currentPosition.lat])
+        entry.radarEl.style.width = `${size}px`
+        entry.radarEl.style.height = `${size}px`
+        entry.radarEl.style.borderColor = hexToRgba(color, 0.34 * cycle)
+        entry.radarEl.style.backgroundColor = hexToRgba(color, 0.06 * cycle)
+        entry.radarMarkerVisible = true
       })
 
       markerEntriesRef.current.forEach((entry) => {
-        if (!entry.pulseMarker) return
+        if (!entry.pulseMarker || !entry.pulseEl) return
 
-        if (!entry.pulseVisible || !entry.marker.getMap()) {
-          if (entry.pulseMarker.getMap()) entry.pulseMarker.setMap(null)
+        if (!entry.pulseVisible || !entry.visible) {
+          entry.pulseEl.style.borderColor = 'transparent'
+          entry.pulseEl.style.backgroundColor = 'transparent'
           return
         }
 
@@ -1917,18 +1843,12 @@ export default function CommandMap({
         const pulseStrokeOpacity = (entry.isPlaybackHighlighted ? 0.28 : 0.18) * cycle
         const pulseFillOpacity = (entry.isPlaybackHighlighted ? 0.12 : 0.08) * cycle
         const pulseColor = colorForCategory(entry.location)
-
-        entry.pulseMarker.setMap(mapRef.current)
-        entry.pulseMarker.setPosition(entry.location.coordinates)
-        entry.pulseMarker.setIcon({
-          path: googleRef.current.maps.SymbolPath.CIRCLE,
-          strokeColor: pulseColor,
-          strokeOpacity: pulseStrokeOpacity,
-          strokeWeight: entry.isPlaybackHighlighted ? 2 : 1.6,
-          fillColor: pulseColor,
-          fillOpacity: pulseFillOpacity,
-          scale: pulseScale,
-        })
+        const size = Math.round(pulseScale * 2)
+        entry.pulseEl.style.width = `${size}px`
+        entry.pulseEl.style.height = `${size}px`
+        entry.pulseEl.style.borderColor = hexToRgba(pulseColor, pulseStrokeOpacity)
+        entry.pulseEl.style.borderWidth = entry.isPlaybackHighlighted ? '2px' : '1.6px'
+        entry.pulseEl.style.backgroundColor = hexToRgba(pulseColor, pulseFillOpacity)
       })
 
       const map = mapRef.current
@@ -1936,27 +1856,13 @@ export default function CommandMap({
       if (map && cameraTarget?.center) {
         const mapCenter = map.getCenter()
         const baseCameraState = cameraStateRef.current || {
-          center: mapCenter ? { lat: mapCenter.lat(), lng: mapCenter.lng() } : cameraTarget.center,
+          center: mapCenter ? { lat: mapCenter.lat, lng: mapCenter.lng } : cameraTarget.center,
           zoom: map.getZoom() || cameraTarget.zoom,
         }
         const nextCenter = lerpPoint(baseCameraState.center, cameraTarget.center, cameraAnimationAlpha)
         const nextZoom = lerp(baseCameraState.zoom, cameraTarget.zoom, cameraAnimationAlpha)
-        cameraStateRef.current = {
-          center: nextCenter,
-          zoom: nextZoom,
-        }
-
-        if (typeof map.moveCamera === 'function') {
-          map.moveCamera({
-            center: nextCenter,
-            zoom: nextZoom,
-          })
-        } else {
-          map.setCenter(nextCenter)
-          if (Math.abs(nextZoom - (map.getZoom() || nextZoom)) > 0.01) {
-            map.setZoom(nextZoom)
-          }
-        }
+        cameraStateRef.current = { center: nextCenter, zoom: nextZoom }
+        map.jumpTo({ center: [nextCenter.lng, nextCenter.lat], zoom: nextZoom })
       }
 
       if (mounted) {
@@ -2026,7 +1932,7 @@ export default function CommandMap({
     }
 
     routeEntriesRef.current.forEach((entry) => {
-      const { route, basePolyline, animatedPolyline } = entry
+      const { route } = entry
       const visible =
         route.id === selectedRouteId ||
         (mapUi.showRoutes &&
@@ -2035,38 +1941,21 @@ export default function CommandMap({
       const emphasized =
         visible && (route.id === selectedRouteId || mapUi.focusFamilyId !== 'all' || mapUi.focusDayId !== 'all')
       const hasSpecificFocus = mapUi.focusFamilyId !== 'all' || mapUi.focusDayId !== 'all'
+      const color = TONE_COLORS[route.tone] || TONE_COLORS.info
 
-      basePolyline.setOptions({
-        strokeColor: TONE_COLORS[route.tone] || TONE_COLORS.info,
-        strokeOpacity:
-          route.tone === 'muted'
-            ? emphasized ? 0.44 : 0.24
-            : emphasized ? 0.64 : 0.26,
-        strokeWeight:
-          route.tone === 'muted'
-            ? emphasized ? 2.6 : 1.8
-            : emphasized ? 3.2 : 2.1,
-      })
+      const baseOpacity = route.tone === 'muted'
+        ? emphasized ? 0.44 : 0.24
+        : emphasized ? 0.64 : 0.26
+      const baseWidth = route.tone === 'muted'
+        ? emphasized ? 2.6 : 1.8
+        : emphasized ? 3.2 : 2.1
 
-      const icons = animatedPolyline.get('icons')
-      if (icons?.length) {
-        icons[0].icon = {
-          ...icons[0].icon,
-          strokeColor: TONE_COLORS[route.tone] || TONE_COLORS.info,
-          strokeOpacity:
-            entry.routeSource === 'directions'
-              ? emphasized ? 0.72 : 0.3
-              : route.tone === 'muted' ? (emphasized ? 0.62 : 0.34) : emphasized ? 0.95 : 0.55,
-          scale:
-            entry.routeSource === 'directions'
-              ? emphasized ? 3.1 : 2.4
-              : route.tone === 'muted' ? (emphasized ? 2.9 : 2.3) : emphasized ? 3.6 : 3,
-        }
-        icons[0].repeat =
-          entry.routeSource === 'directions'
-            ? emphasized ? '18px' : '22px'
-            : emphasized ? '12px' : route.dashed ? '18px' : '15px'
-        animatedPolyline.set('icons', icons)
+      map.setLayoutProperty(entry.baseLayerId, 'visibility', visible ? 'visible' : 'none')
+      map.setLayoutProperty(entry.dashLayerId, 'visibility', visible ? 'visible' : 'none')
+      if (visible) {
+        map.setPaintProperty(entry.baseLayerId, 'line-color', color)
+        map.setPaintProperty(entry.baseLayerId, 'line-opacity', baseOpacity)
+        map.setPaintProperty(entry.baseLayerId, 'line-width', baseWidth)
       }
 
       const nominalLoopDuration = entry.lengthMeters / entry.nominalSpeedMetersPerSecond
@@ -2074,17 +1963,16 @@ export default function CommandMap({
         Math.max(nominalLoopDuration, MIN_ROUTE_LOOP_SECONDS),
         MAX_ROUTE_LOOP_SECONDS,
       )
+      entry.emphasized = emphasized
+      entry.visible = visible
       entry.shouldAnimate =
         visible &&
         (route.id === selectedRouteId ||
           (entry.routeSource === 'seeded' && (!hasSpecificFocus || emphasized)))
-
-      basePolyline.setMap(visible ? map : null)
-      animatedPolyline.setMap(visible ? map : null)
     })
 
     markerEntriesRef.current.forEach((entry) => {
-      const { location, marker, pulseMarker } = entry
+      const { location, marker, markerEl } = entry
       const highlightedByPlayback = playbackActive && location.id === playbackAutoLocationId
       const visible =
         location.id === selectedLocationId ||
@@ -2093,39 +1981,24 @@ export default function CommandMap({
           ? mapUi.showFacilities && matchesDay(location.dayId, effectiveFocusDayId)
           : mapUi.showRoutes && matchesDay(location.dayId, effectiveFocusDayId))
 
-      marker.setMap(visible ? map : null)
+      entry.visible = visible
+      marker.getElement().style.display = visible ? '' : 'none'
       entry.isPlaybackHighlighted = highlightedByPlayback
       entry.pulseVisible = visible && (location.id === selectedLocationId || highlightedByPlayback)
-      pulseMarker?.setPosition(location.coordinates)
-      if (!entry.pulseVisible && pulseMarker?.getMap()) {
-        pulseMarker.setMap(null)
+
+      if (markerEl) {
+        const emphasized = location.id === selectedLocationId || highlightedByPlayback
+        const newEl = buildLocationEl(colorForCategory(location), emphasized, emphasized ? location.title : null)
+        markerEl.innerHTML = newEl.innerHTML
+        markerEl.style.cssText = newEl.style.cssText
       }
-      marker.setOptions({
-        label:
-          location.id === selectedLocationId || highlightedByPlayback
-            ? {
-                text: location.title,
-                color: '#C9D1D9',
-                fontSize: '8px',
-                fontWeight: '700',
-              }
-            : null,
-        icon: {
-          path: 'M -6 0 L 0 -6 L 6 0 L 0 6 Z',
-          fillColor: colorForCategory(location),
-          fillOpacity: location.id === selectedLocationId || highlightedByPlayback ? 0.32 : 0.18,
-          strokeColor: colorForCategory(location),
-          strokeWeight: location.id === selectedLocationId || highlightedByPlayback ? 3 : 2,
-          scale: location.id === selectedLocationId || highlightedByPlayback ? 1.5 : 1.2,
-          labelOrigin: new googleRef.current.maps.Point(0, 18),
-        },
-      })
     })
 
     vehicleEntriesRef.current.forEach((entry) => {
       const routeEntry = pickFamilyRouteEntry(routeEntriesRef.current, entry.family.id, cursorSlot, effectiveFocusDayId, itineraryItems)
       if (!routeEntry) {
-        entry.marker.setMap(null)
+        entry.marker.getElement().style.display = 'none'
+        entry.visible = false
         entry.isInTransit = false
         entry.isPreMove = false
         entry.cameraLeadPosition = null
@@ -2146,7 +2019,8 @@ export default function CommandMap({
       const visible = mapUi.showRoutes && (relevantToFocus || selectedRoute)
 
       if (!visible) {
-        entry.marker.setMap(null)
+        entry.marker.getElement().style.display = 'none'
+        entry.visible = false
         entry.isInTransit = false
         entry.isPreMove = false
         entry.cameraLeadPosition = null
@@ -2195,7 +2069,8 @@ export default function CommandMap({
       const aboutToMove = cursorSlot < startSlot && cursorSlot >= preMoveWindowStart
       const inTransit = cursorSlot >= startSlot && cursorSlot <= endSlot
 
-      entry.marker.setMap(map)
+      entry.marker.getElement().style.display = ''
+      entry.visible = true
       entry.targetPosition = position
       entry.targetHeading = heading
       entry.currentPosition = position
@@ -2207,24 +2082,14 @@ export default function CommandMap({
       entry.routePlaybackProgress = mappedProgress
       entry.alertVisible = aboutToMove
       entry.alertTone = fillColor
-      entry.marker.setPosition(position)
-      entry.marker.setZIndex(emphasized ? 85 : 60)
-      entry.marker.setOpacity(emphasized ? 1 : 0.9)
-      entry.marker.setIcon({
-        path: googleRef.current.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-        fillColor,
-        fillOpacity: emphasized ? 1 : 0.9,
-        strokeColor: emphasized ? '#E6EDF3' : '#0D1117',
-        strokeWeight: emphasized ? 2.4 : 2,
-        rotation: heading,
-        scale: emphasized ? 6.3 : 5.6,
-        anchor: new googleRef.current.maps.Point(0, 2.8),
-      })
-    })
+      if (position) entry.marker.setLngLat([position.lng, position.lat])
+      entry.marker.setRotation(heading)
 
-    if (trafficLayerRef.current) {
-      trafficLayerRef.current.setMap(mapUi.showTraffic ? map : null)
-    }
+      if (entry.arrowEl) {
+        const newEl = buildArrowEl(fillColor, emphasized)
+        entry.arrowEl.innerHTML = newEl.innerHTML
+      }
+    })
   }, [cursorSlot, effectiveFocusDayId, itineraryItems, locations, mapUi, playbackActive, playbackHighlightLocationId, selectedLocationId, selectedRouteId, status])
 
   useEffect(() => {
@@ -2269,7 +2134,7 @@ export default function CommandMap({
     const candidates = []
 
     vehicleEntriesRef.current.forEach((entry) => {
-      if (!entry.marker.getMap() || !entry.routeEntry) return false
+      if (!entry.visible || !entry.routeEntry) return false
 
       const { family, routeEntry } = entry
       const { route } = routeEntry
@@ -2335,7 +2200,7 @@ export default function CommandMap({
       if (!location) return
 
       const visibleFamilies = vehicleEntriesRef.current
-        .filter((entry) => entry.marker.getMap())
+        .filter((entry) => entry.visible)
         .map((entry) => entry.family)
       const cueFamilies = resolveOnsiteCueFamilies(group, itineraryItems, routeEntriesRef.current, families)
 
@@ -2433,7 +2298,7 @@ export default function CommandMap({
     const currentCenter = map.getCenter()
     cameraStateRef.current = currentCenter
       ? {
-          center: { lat: currentCenter.lat(), lng: currentCenter.lng() },
+          center: { lat: currentCenter.lat, lng: currentCenter.lng },
           zoom: map.getZoom() || cameraStateRef.current?.zoom || 7,
         }
       : cameraStateRef.current
@@ -2446,20 +2311,23 @@ export default function CommandMap({
 
       if (routeLengthMeters < 25000) {
         const midpoint = routePath[Math.floor(routePath.length / 2)]
-        if (midpoint) map.panTo(midpoint)
-        if ((map.getZoom() || 0) < 10) {
-          map.setZoom(10)
-        }
+        if (midpoint) map.easeTo({ center: [midpoint.lng, midpoint.lat] })
+        if ((map.getZoom() || 0) < 10) map.easeTo({ zoom: 10 })
       } else {
-        const bounds = new googleRef.current.maps.LatLngBounds()
-        routePath.forEach((point) => bounds.extend(point))
-        map.fitBounds(bounds, 120)
+        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity
+        routePath.forEach((point) => {
+          if (point.lat < minLat) minLat = point.lat
+          if (point.lat > maxLat) maxLat = point.lat
+          if (point.lng < minLng) minLng = point.lng
+          if (point.lng > maxLng) maxLng = point.lng
+        })
+        map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 120, duration: 600 })
       }
 
       const routeCenter = map.getCenter()
       cameraStateRef.current = routeCenter
         ? {
-            center: { lat: routeCenter.lat(), lng: routeCenter.lng() },
+            center: { lat: routeCenter.lat, lng: routeCenter.lng },
             zoom: map.getZoom() || cameraStateRef.current?.zoom || 7,
           }
         : cameraStateRef.current
@@ -2473,15 +2341,13 @@ export default function CommandMap({
       if (lastViewportTargetRef.current === viewportKey) return
       const currentCenter = map.getCenter()
       const distanceFromCenter = currentCenter
-        ? computeDistanceBetween(currentCenter, selectedLocation.coordinates)
+        ? computeDistanceBetween({ lat: currentCenter.lat, lng: currentCenter.lng }, selectedLocation.coordinates)
         : Infinity
-      map.panTo(selectedLocation.coordinates)
-      if (distanceFromCenter > 6000 && (map.getZoom() || 0) < 12) {
-        map.setZoom(12)
-      }
+      const targetZoom = distanceFromCenter > 6000 && (map.getZoom() || 0) < 12 ? 12 : undefined
+      map.easeTo({ center: [selectedLocation.coordinates.lng, selectedLocation.coordinates.lat], ...(targetZoom ? { zoom: targetZoom } : {}) })
       cameraStateRef.current = {
         center: selectedLocation.coordinates,
-        zoom: map.getZoom() || cameraStateRef.current?.zoom || 12,
+        zoom: targetZoom || map.getZoom() || cameraStateRef.current?.zoom || 12,
       }
       lastViewportTargetRef.current = viewportKey
       return
@@ -2561,6 +2427,21 @@ export default function CommandMap({
               Traffic
             </MapChip>
           </div>
+
+          <div className="mb-2 text-[8px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
+            Tile Source
+          </div>
+          <div className="mb-3 flex flex-wrap gap-2">
+            <MapChip active={mapUi.tileProvider === 'openfreemap' || !mapUi.tileProvider} onClick={() => onUpdateMapUi({ tileProvider: 'openfreemap' })}>OpenFreeMap</MapChip>
+            <MapChip active={mapUi.tileProvider === 'osm'} onClick={() => onUpdateMapUi({ tileProvider: 'osm' })}>OSM</MapChip>
+            <MapChip active={mapUi.tileProvider === 'offline'} onClick={handleOfflineTileToggle}>Offline</MapChip>
+          </div>
+          {mapUi.tileProvider === 'offline' && !offlinePmtilesPath && (
+            <div className="mb-3 rounded border border-[#D29922]/30 bg-[#D29922]/08 px-3 py-2 text-[9px] leading-relaxed text-[#D29922]">
+              Select a .pmtiles region file to use offline tiles. Download from maps.protomaps.com.
+            </div>
+          )}
+          <input ref={pmtilesInputRef} type="file" accept=".pmtiles" className="hidden" onChange={handlePmtilesFile} />
 
           <div className="mb-2 text-[8px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
             Family Focus
