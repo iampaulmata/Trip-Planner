@@ -15,8 +15,10 @@ import {
   MapPin,
   MessageSquare,
   Pause,
+  Pencil,
   Phone,
   Play,
+  Plus,
   Receipt,
   RotateCcw,
   Route,
@@ -24,6 +26,8 @@ import {
   Settings,
   Star,
   Sun,
+  Trash2,
+  Upload,
   Users,
   Utensils,
   X,
@@ -37,6 +41,7 @@ import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
 import { usePersistedTripState } from './usePersistedTripState'
 import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
 import {
+  COLLECTION_BY_TYPE,
   ENTITY_PAGE,
   ensureSelectionForPage,
   getDayMeta,
@@ -66,6 +71,7 @@ import {
   synchronizeRoutePaths,
   updateEntityInCollection,
 } from './tripModel'
+import { EntityModal } from './EntityModal'
 import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
 
 
@@ -824,6 +830,7 @@ function AppShell({
   doc,
   onSetSelectedPage,
   onExport,
+  onImport,
   onSearchChange,
   searchResults,
   onOpenEntity,
@@ -871,6 +878,14 @@ function AppShell({
             title="Export trip state"
           >
             <Download size={20} strokeWidth={1.6} />
+          </button>
+          <button
+            type="button"
+            onClick={onImport}
+            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
+            title="Import trip state from JSON"
+          >
+            <Upload size={20} strokeWidth={1.6} />
           </button>
           <button
             type="button"
@@ -2906,7 +2921,7 @@ function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertP
   )
 }
 
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }) {
+function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote, onOpenModal }) {
   const selectedMeal = selection.type === 'meal'
     ? getEntityById(doc, 'meal', selection.id) || doc.meals[0]
     : doc.meals[0]
@@ -2929,7 +2944,17 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(360px,0.78fr)_minmax(520px,1.22fr)] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
+          <button
+            type="button"
+            onClick={() => onOpenModal({ mode: 'add', entityType: 'meal', entity: null })}
+            className="flex shrink-0 items-center gap-1.5 border border-[#58A6FF]/40 bg-[#58A6FF]/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/70"
+          >
+            <Plus size={11} />
+            Meal
+          </button>
+        </div>
         <div className="space-y-3">
           {doc.meals.map((meal) => (
             <div
@@ -2968,13 +2993,24 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
                   </div>
                 </div>
               </button>
-              <div className="justify-self-end">
+              <div className="flex flex-col items-end gap-2 justify-self-end">
                 <button
                   type="button"
                   onClick={() => onToggleMealStatus(meal.id)}
                   className="border border-transparent"
                 >
                   <StatusPill tone={meal.status}>{meal.status}</StatusPill>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onOpenModal({ mode: 'edit', entityType: 'meal', entity: meal })
+                  }}
+                  className="text-[#8B949E]/50 transition-colors hover:text-[#58A6FF]"
+                  title="Edit meal"
+                >
+                  <Pencil size={11} />
                 </button>
               </div>
             </div>
@@ -3119,7 +3155,7 @@ function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdat
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }) {
+function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity, onOpenModal }) {
   const selectedActivity = useMemo(
     () => (selection.type === 'activity' ? doc.activities.find((activity) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
     [doc.activities, selection],
@@ -3169,15 +3205,20 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
     () => transitFamilies.find((entry) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
     [selectedTransitFamilyId, transitFamilies],
   )
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftDayId, setDraftDayId] = useState('fri')
-  const [draftWindow, setDraftWindow] = useState('Fri / flexible')
-  const [draftDescription, setDraftDescription] = useState('')
-
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(560px,1fr)] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
+          <button
+            type="button"
+            onClick={() => onOpenModal({ mode: 'add', entityType: 'activity', entity: null })}
+            className="flex shrink-0 items-center gap-1.5 border border-[#58A6FF]/40 bg-[#58A6FF]/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/70"
+          >
+            <Plus size={11} />
+            Activity
+          </button>
+        </div>
         <div className="space-y-4">
           {doc.activities.map((activity) => (
             <SelectableCard
@@ -3188,7 +3229,20 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
             >
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-[13px] font-black uppercase tracking-widest text-[#C9D1D9]">{activity.title}</h3>
-                <StatusPill tone={activity.status}>{activity.status}</StatusPill>
+                <div className="flex items-center gap-2">
+                  <StatusPill tone={activity.status}>{activity.status}</StatusPill>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenModal({ mode: 'edit', entityType: 'activity', entity: activity })
+                    }}
+                    className="text-[#8B949E]/50 transition-colors hover:text-[#58A6FF]"
+                    title="Edit activity"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
               </div>
               <div className="mb-3 text-[10px] font-bold uppercase tracking-widest text-[#58A6FF]">
                 {activity.window}
@@ -3199,58 +3253,6 @@ function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onCo
               </div>
             </SelectableCard>
           ))}
-        </div>
-        <div className="mt-5 border border-[#30363D] bg-[#0d1117] p-4">
-          <SectionTitle eyebrow="Planner" title="Add activity" />
-          <div className="space-y-3">
-            <input
-              value={draftTitle}
-              onChange={(event) => setDraftTitle(event.target.value)}
-              placeholder="Activity title"
-              className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
-            />
-            <div className="grid grid-cols-[110px_1fr] gap-2">
-              <select
-                value={draftDayId}
-                onChange={(event) => setDraftDayId(event.target.value)}
-                className="border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
-              >
-                {DAYS.map((day) => (
-                  <option key={day.id} value={day.id}>
-                    {day.shortLabel.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={draftWindow}
-                onChange={(event) => setDraftWindow(event.target.value)}
-                placeholder="Window label"
-                className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
-              />
-            </div>
-            <NotesBox
-              value={draftDescription}
-              onChange={setDraftDescription}
-              placeholder="Short description or planning purpose..."
-            />
-            <button
-              type="button"
-              onClick={() => {
-                if (!draftTitle.trim()) return
-                onAddActivity({
-                  title: draftTitle.trim(),
-                  dayId: draftDayId,
-                  window: draftWindow.trim(),
-                  description: draftDescription.trim(),
-                })
-                setDraftTitle('')
-                setDraftDescription('')
-              }}
-              className="w-full border border-[#30363D] bg-[#161b22] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
-            >
-              Add activity
-            </button>
-          </div>
         </div>
       </div>
 
@@ -3403,6 +3405,7 @@ function ExpensesPage({
   onResetExpenseAllocationsToEqual,
   onUpdatePageNote,
   onConvertPageNote,
+  onOpenModal,
 }) {
   const activeExpenseId =
     selection.type === 'expense' && doc.expenses.some((expense) => expense.id === selection.id)
@@ -3545,18 +3548,30 @@ function ExpensesPage({
                   : `${doc.families.length} families`}
               </div>
               <div className="font-mono text-[12px] text-[#C9D1D9]">{formatCurrency(expense.amount)}</div>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onToggleExpenseSettled(expense.id)
-                }}
-                className="justify-self-end"
-              >
-                <StatusPill tone={expense.settled ? 'Settled' : 'Open'}>
-                  {expense.settled ? 'Settled' : 'Open'}
-                </StatusPill>
-              </button>
+              <div className="flex items-center gap-2 justify-self-end">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onToggleExpenseSettled(expense.id)
+                  }}
+                >
+                  <StatusPill tone={expense.settled ? 'Settled' : 'Open'}>
+                    {expense.settled ? 'Settled' : 'Open'}
+                  </StatusPill>
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onOpenModal({ mode: 'edit', entityType: 'expense', entity: expense })
+                  }}
+                  className="text-[#8B949E]/50 transition-colors hover:text-[#F85149]"
+                  title="Delete expense"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -3790,11 +3805,21 @@ function ExpensesPage({
   )
 }
 
-function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }) {
+function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onOpenModal }) {
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Travel Units" title="Family roster" />
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <SectionTitle eyebrow="Travel Units" title="Family roster" />
+          <button
+            type="button"
+            onClick={() => onOpenModal({ mode: 'add', entityType: 'family', entity: null })}
+            className="flex shrink-0 items-center gap-1.5 border border-[#58A6FF]/40 bg-[#58A6FF]/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/70"
+          >
+            <Plus size={11} />
+            Family
+          </button>
+        </div>
         <FamilyList doc={doc} selection={selection} onSelectEntity={onSelectEntity} />
         <div className="mt-5">
           <PageNotesCard
@@ -3825,7 +3850,20 @@ function FamiliesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConv
                     <div className="text-[12px] font-black uppercase tracking-widest text-[#C9D1D9]">{family.title}</div>
                     <div className="text-[10px] text-[#8B949E]">{family.origin}</div>
                   </div>
-                  <StatusPill tone={family.status}>{family.status}</StatusPill>
+                  <div className="flex items-center gap-2">
+                    <StatusPill tone={family.status}>{family.status}</StatusPill>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onOpenModal({ mode: 'edit', entityType: 'family', entity: family })
+                      }}
+                      className="text-[#8B949E]/50 transition-colors hover:text-[#58A6FF]"
+                      title="Edit family"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </div>
                 </div>
                 <div className="mb-3 h-1.5 overflow-hidden rounded-full border border-[#30363D]/30 bg-[#0d1117]">
                   <div
@@ -3871,6 +3909,7 @@ function App() {
   const locationIntelHydrationRef = useRef(new Set())
   const startupTimelineSyncRef = useRef(false)
   const seededPlanRefreshRef = useRef(false)
+  const [modal, setModal] = useState(null)
   const [weatherState, setWeatherState] = useState({
     status: 'loading',
     targets: {},
@@ -4078,16 +4117,17 @@ function App() {
 
     seededPlanRefreshRef.current = true
     setDoc((current) => {
-      const syncCollection = (currentCollection, initialCollection, refreshIds, obsoleteIds = new Set()) => {
+      const syncCollection = (currentCollection, initialCollection, refreshIds, obsoleteIds = new Set(), tombstoneIds = new Set()) => {
         const initialMap = new Map(initialCollection.map((item) => [item.id, item]))
         const filtered = currentCollection.filter((item) => !obsoleteIds.has(item.id))
         const existingIds = new Set(filtered.map((item) => item.id))
         const replaced = filtered.map((item) => (refreshIds.has(item.id) && initialMap.has(item.id) ? initialMap.get(item.id) : item))
         const additions = [...refreshIds]
-          .filter((id) => !existingIds.has(id) && initialMap.has(id))
+          .filter((id) => !existingIds.has(id) && initialMap.has(id) && !tombstoneIds.has(id))
           .map((id) => initialMap.get(id))
         return [...replaced, ...additions]
       }
+      const getTombstones = (collectionName) => new Set(current.tombstones?.[collectionName] || [])
 
       const nextLocations = syncCollection(
         current.locations,
@@ -4129,11 +4169,11 @@ function App() {
           meals: initialDoc.pageNotes.meals,
           activities: initialDoc.pageNotes.activities,
         },
-        families: syncCollection(current.families, initialDoc.families, SEEDED_PLAN_REFRESH_IDS.families),
+        families: syncCollection(current.families, initialDoc.families, SEEDED_PLAN_REFRESH_IDS.families, new Set(), getTombstones('families')),
         locations: nextLocations,
-        meals: syncCollection(current.meals, initialDoc.meals, SEEDED_PLAN_REFRESH_IDS.meals),
-        activities: syncCollection(current.activities, initialDoc.activities, SEEDED_PLAN_REFRESH_IDS.activities),
-        tasks: syncCollection(current.tasks, initialDoc.tasks, SEEDED_PLAN_REFRESH_IDS.tasks),
+        meals: syncCollection(current.meals, initialDoc.meals, SEEDED_PLAN_REFRESH_IDS.meals, new Set(), getTombstones('meals')),
+        activities: syncCollection(current.activities, initialDoc.activities, SEEDED_PLAN_REFRESH_IDS.activities, new Set(), getTombstones('activities')),
+        tasks: syncCollection(current.tasks, initialDoc.tasks, SEEDED_PLAN_REFRESH_IDS.tasks, new Set(), getTombstones('tasks')),
         routes: nextRoutes,
         itineraryItems: nextItineraryItems,
       }
@@ -4714,6 +4754,166 @@ function App() {
     })
   }
 
+  const openModal = useCallback((config) => setModal(config), [])
+  const closeModal = useCallback(() => setModal(null), [])
+
+  const deleteEntity = useCallback((entityType, entityId) => {
+    const collectionName = COLLECTION_BY_TYPE[entityType]
+    if (!collectionName) return
+    setDoc((current) => {
+      const tombstones = {
+        ...(current.tombstones || {}),
+        [collectionName]: [...new Set([...((current.tombstones || {})[collectionName] || []), entityId])],
+      }
+      const remaining = current[collectionName].filter((item) => item.id !== entityId)
+      const wasSelected = current.selection?.type === entityType && current.selection?.id === entityId
+      const nextDoc = {
+        ...current,
+        tombstones,
+        [collectionName]: remaining,
+        selection: wasSelected
+          ? remaining.length
+            ? { type: entityType, id: remaining[0].id }
+            : current.selection
+          : current.selection,
+      }
+      return entityType === 'task' || entityType === 'family' ? withRefreshedFamilies(nextDoc) : nextDoc
+    })
+  }, [setDoc])
+
+  const saveEntity = useCallback((entityType, entityId, values, mode) => {
+    const collectionName = COLLECTION_BY_TYPE[entityType]
+    if (!collectionName) return
+    setDoc((current) => {
+      if (mode === 'add') {
+        const newEntity = stampFamilyMetadata({ id: entityId, type: entityType, ...values }, currentFamilyId)
+        const nextDoc = {
+          ...current,
+          [collectionName]: [...current[collectionName], newEntity],
+          selection: { type: entityType, id: entityId },
+        }
+        return entityType === 'task' || entityType === 'family' ? withRefreshedFamilies(nextDoc) : nextDoc
+      }
+      const nextDoc = {
+        ...current,
+        [collectionName]: current[collectionName].map((item) =>
+          item.id === entityId ? stampFamilyMetadata({ ...item, ...values }, currentFamilyId) : item,
+        ),
+      }
+      return entityType === 'task' || entityType === 'family' ? withRefreshedFamilies(nextDoc) : nextDoc
+    })
+  }, [currentFamilyId, setDoc])
+
+  const handleModalConfirm = useCallback(({ mode, entityType, entity, values }) => {
+    if (mode === 'delete') {
+      deleteEntity(entityType, entity.id)
+      closeModal()
+      return
+    }
+
+    const newId = mode === 'add' ? `${entityType}-user-${Date.now()}` : entity?.id
+    let built = { ...values }
+
+    if (entityType === 'family') {
+      built = {
+        title: values.name || 'New Family',
+        name: values.name || 'New Family',
+        shortOrigin: values.shortOrigin || '',
+        origin: values.origin || '',
+        headcount: values.headcount || '',
+        vehicle: values.vehicle || 'SUV',
+        vehicleLabel: values.vehicleLabel || 'Vehicle',
+        responsibility: values.responsibility || '',
+        arrivalDayId: values.arrivalDayId || 'thu',
+        status: values.status || 'Transit',
+        eta: values.eta || '',
+        driveTime: values.driveTime || '',
+        routeSummary: values.routeSummary || '',
+        note: values.note || '',
+        ...(mode === 'add' ? { readiness: 0, taskIds: [], linkedEntityKeys: [], plannedStopIds: [] } : {}),
+      }
+    } else if (entityType === 'meal') {
+      built = {
+        title: values.title || '',
+        dayId: values.dayId || 'fri',
+        timeLabel: values.timeLabel || '',
+        status: values.status || 'Assigned',
+        owner: values.owner || 'Shared',
+        reservationType: values.reservationType || 'Shared',
+        note: values.note || '',
+        ...(mode === 'add' ? { locationId: null, linkedEntityKeys: [], taskIds: [] } : {}),
+      }
+    } else if (entityType === 'activity') {
+      built = {
+        title: values.title || '',
+        dayId: values.dayId || 'fri',
+        window: values.window || `${values.dayId || 'fri'} / flexible`,
+        status: values.status || 'Pending',
+        riskLevel: 'Low',
+        weatherSensitivity: 'Low',
+        description: values.description || '',
+        backup: values.backup || 'If this becomes too ambitious, downgrade to the nearest viable alternative.',
+        ...(mode === 'add' ? { locationId: null, linkedEntityKeys: [], taskIds: [], note: '' } : {}),
+      }
+    } else if (entityType === 'expense') {
+      built = {
+        title: values.label || values.title || '',
+        payer: values.payer || 'Unassigned',
+        amount: values.amount || 0,
+        split: EXPENSE_SPLIT_LABELS.equal,
+        allocationMode: 'equal',
+        allocations: {},
+        settled: false,
+        note: values.note || '',
+        ...(mode === 'add' ? { linkedEntityKeys: [] } : {}),
+      }
+    } else if (entityType === 'location') {
+      built = {
+        title: values.title || '',
+        category: values.category || 'meal',
+        dayId: values.dayId || 'all',
+        address: values.address || '',
+        externalUrl: values.externalUrl || '',
+        summary: values.summary || '',
+        ...(mode === 'add' ? { coordinates: null, linkedEntityKeys: [], photos: [] } : {}),
+      }
+    } else if (entityType === 'task') {
+      built = {
+        title: values.title || '',
+        dayId: values.dayId || 'all',
+        ownerFamilyId: values.ownerFamilyId || null,
+        status: values.status || 'open',
+        note: values.note || '',
+        ...(mode === 'add' ? { linkedEntityKeys: [] } : {}),
+      }
+    }
+
+    saveEntity(entityType, newId, built, mode)
+    closeModal()
+  }, [deleteEntity, saveEntity, closeModal])
+
+  const importState = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = (e) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.target.result)
+          if (!parsed?.locations || !parsed?.selection) return
+          setDoc(parsed)
+        } catch {
+          // silently ignore malformed files
+        }
+      }
+      reader.readAsText(file)
+    }
+    input.click()
+  }
+
   const updateMapUi = (patch) => {
     setDoc((current) => ({
       ...current,
@@ -4761,6 +4961,7 @@ function App() {
     onUpdatePageNote: updatePageNote,
     onConvertPageNote: convertPageNoteToTask,
     onAddActivity: addActivity,
+    onOpenModal: openModal,
   }
 
   let content = null
@@ -4792,6 +4993,7 @@ function App() {
         onUpdateExpenseAllocation={updateExpenseAllocation}
         onResetExpenseAllocationsToEqual={resetExpenseAllocationsToEqual}
         onAddExpense={addExpense}
+        onOpenModal={openModal}
       />
     )
   } else if (displayDoc.selectedPage === 'families') {
@@ -4823,6 +5025,7 @@ function App() {
       doc={displayDoc}
       onSetSelectedPage={setSelectedPage}
       onExport={exportState}
+      onImport={importState}
       onSearchChange={updateSearchQuery}
       searchResults={searchResults}
       onOpenEntity={openEntity}
@@ -4831,6 +5034,12 @@ function App() {
       onSetActiveFamily={setActiveFamilyProfile}
     >
       {mainWithInspector}
+      <EntityModal
+        modal={modal}
+        families={displayDoc.families}
+        onClose={closeModal}
+        onConfirm={handleModalConfirm}
+      />
     </AppShell>
   )
 }
