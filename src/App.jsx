@@ -5016,6 +5016,7 @@ function App() {
         onConvertNoteToTask={convertNoteToTask}
         onToggleMealStatus={toggleMealStatus}
         onToggleExpenseSettled={toggleExpenseSettled}
+        onOpenModal={openModal}
       />
     </div>
   )

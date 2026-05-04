@@ -484,7 +484,7 @@ export function EntityModal({ modal, families, onClose, onConfirm }) {
     if (!modal) return
     const defaults = getDefaults(modal.entityType)
     setValues(modal.mode === 'add' ? defaults : { ...defaults, ...(modal.entity || {}) })
-    setConfirmDelete(false)
+    setConfirmDelete(modal.initialConfirmDelete || false)
   }, [modal])
 
   useEffect(() => {

@@ -11,6 +11,7 @@ import {
   Plus,
   Receipt,
   Square,
+  Trash2,
   UtensilsCrossed,
 } from 'lucide-react'
 import {
@@ -80,26 +81,40 @@ function DetailRow({ label, value }) {
   )
 }
 
-function TaskRow({ task, onToggle }) {
+function TaskRow({ task, onToggle, onEdit, onDelete }) {
   const done = task.status === 'done'
   return (
-    <button
-      type="button"
-      onClick={() => onToggle(task.id)}
-      className="flex w-full items-center justify-between border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50"
-    >
-      <div>
+    <div className="group flex w-full items-center gap-2 border-b border-[#30363D]/30 px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors last:border-b-0 hover:bg-[#1f2a34]/50">
+      <div className="min-w-0 flex-1">
         <div className="font-medium">{task.title}</div>
         <div className="text-[10px] text-[#8B949E]">{task.dayId?.toUpperCase()}</div>
       </div>
-      <span
-        className={`flex h-5 w-5 items-center justify-center border ${
-          done ? 'border-[#3FB950] bg-[#3FB950]/15 text-[#3FB950]' : 'border-[#30363D] text-[#8B949E]'
+      <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={() => onEdit(task)}
+          className="flex h-5 w-5 items-center justify-center text-[#8B949E] transition-colors hover:text-[#58A6FF]"
+        >
+          <Pencil size={11} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(task)}
+          className="flex h-5 w-5 items-center justify-center text-[#8B949E] transition-colors hover:text-[#F85149]"
+        >
+          <Trash2 size={11} />
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => onToggle(task.id)}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center border transition-colors ${
+          done ? 'border-[#3FB950] bg-[#3FB950]/15 text-[#3FB950]' : 'border-[#30363D] text-[#8B949E] hover:border-[#3FB950]/50'
         }`}
       >
         {done ? <Check size={12} /> : null}
-      </span>
-    </button>
+      </button>
+    </div>
   )
 }
 
@@ -331,6 +346,7 @@ export default function InspectorRail({
   onConvertNoteToTask,
   onToggleMealStatus,
   onToggleExpenseSettled,
+  onOpenModal,
 }) {
   const entity = useMemo(() => {
     const collectionName = selection ? {
@@ -652,7 +668,13 @@ export default function InspectorRail({
               {tasks.length ? (
                 <div className="-mx-4 mb-4 border-y border-[#30363D]">
                   {tasks.map((task) => (
-                    <TaskRow key={task.id} task={task} onToggle={onToggleTask} />
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      onToggle={onToggleTask}
+                      onEdit={(t) => onOpenModal?.({ mode: 'edit', entityType: 'task', entity: t })}
+                      onDelete={(t) => onOpenModal?.({ mode: 'edit', entityType: 'task', entity: t, initialConfirmDelete: true })}
+                    />
                   ))}
                 </div>
               ) : (
